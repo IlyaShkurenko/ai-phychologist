@@ -1,0 +1,52 @@
+version: "3.9"
+
+services:
+  tdlib-service:
+    build:
+      context: .
+      dockerfile: tdlib-service/Dockerfile
+    container_name: tdlib-service
+    environment:
+      TDLIB_SERVICE_PORT: 4002
+      TDLIB_MODE: ${TDLIB_MODE:-mock}
+      TDLIB_API_ID: ${TDLIB_API_ID:-}
+      TDLIB_API_HASH: ${TDLIB_API_HASH:-}
+      TDLIB_LIBRARY_PATH: ${TDLIB_LIBRARY_PATH:-/usr/local/lib/libtdjson.so}
+      TDLIB_DATA_DIR: /app/tdlib-data
+    volumes:
+      - ./tdlib-data:/app/tdlib-data
+      - ./tdlib-service:/app/tdlib-service
+    ports:
+      - "4002:4002"
+
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    container_name: telegram-analyzer-api
+    depends_on:
+      - tdlib-service
+    environment:
+      API_PORT: 4001
+      TDLIB_BASE_URL: http://tdlib-service:4002
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      SESSION_TTL_MS: ${SESSION_TTL_MS:-604800000}
+    volumes:
+      - ./api:/app/api
+    ports:
+      - "4001:4001"
+
+  web:
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+    container_name: telegram-analyzer-web
+    depends_on:
+      - api
+    environment:
+      VITE_API_BASE_URL: http://localhost:4001
+    volumes:
+      - ./web:/app/web
+    ports:
+      - "5173:5173"
