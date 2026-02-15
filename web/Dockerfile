@@ -7,7 +7,7 @@ COPY web/package*.json ./web/
 COPY api/package*.json ./api/
 COPY tdlib-service/package*.json ./tdlib-service/
 
-RUN npm install
+RUN npm install --workspace web --include-workspace-root=false
 
 COPY . .
 

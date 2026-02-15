@@ -10,6 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gperf \
     libssl-dev \
     make \
+    python3 \
     zlib1g-dev \
   && rm -rf /var/lib/apt/lists/*
 
@@ -25,7 +26,7 @@ COPY tdlib-service/package*.json ./tdlib-service/
 COPY api/package*.json ./api/
 COPY web/package*.json ./web/
 
-RUN npm install
+RUN npm install --workspace tdlib-service --include-workspace-root=false
 
 COPY . .
 
