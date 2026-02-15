@@ -1,0 +1,79 @@
+export type AuthState =
+  | "wait_phone_number"
+  | "wait_other_device_confirmation"
+  | "wait_code"
+  | "wait_password"
+  | "ready"
+  | "closed";
+
+export type TdlibEventType =
+  | "auth_state"
+  | "chats_updated"
+  | "history_loaded"
+  | "message_received"
+  | "errors";
+
+export interface TdlibEvent<T = unknown> {
+  type: TdlibEventType;
+  sessionId: string;
+  payload: T;
+  ts: number;
+}
+
+export interface ChatSummary {
+  id: number;
+  title: string;
+  unreadCount?: number;
+  lastMessageSnippet?: string;
+  lastMessageTs?: number;
+  isPrivate?: boolean;
+}
+
+export interface ChatMessage {
+  id: number;
+  chatId: number;
+  senderLabel: "Me" | "Other";
+  senderId?: number;
+  text: string;
+  timestamp: number;
+}
+
+export interface TelegramSessionInfo {
+  sessionId: string;
+  authState: AuthState;
+  qrLink?: string;
+  createdAt: number;
+}
+
+export interface HistoryRange {
+  startTs: number;
+  endTs: number;
+}
+
+export interface TelegramAdapter {
+  createSession(sessionId: string): Promise<void>;
+  destroySession(sessionId: string): Promise<void>;
+  getSessionInfo(sessionId: string): TelegramSessionInfo;
+  startQrAuthentication(sessionId: string): Promise<void>;
+  setPhoneNumber(sessionId: string, phoneNumber: string): Promise<void>;
+  submitCode(sessionId: string, code: string): Promise<void>;
+  submitPassword(sessionId: string, password: string): Promise<void>;
+  listChats(sessionId: string, limit?: number): Promise<ChatSummary[]>;
+  getChatHistory(
+    sessionId: string,
+    chatId: number,
+    limit: number,
+    fromMessageId?: number,
+  ): Promise<ChatMessage[]>;
+  getChatHistoryByDate(
+    sessionId: string,
+    chatId: number,
+    range: HistoryRange,
+  ): Promise<ChatMessage[]>;
+  getMessagesByIds(
+    sessionId: string,
+    chatId: number,
+    ids: number[],
+  ): Promise<ChatMessage[]>;
+  subscribe(sessionId: string, listener: (event: TdlibEvent) => void): () => void;
+}

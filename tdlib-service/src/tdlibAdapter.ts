@@ -1,0 +1,674 @@
+import fs from "node:fs";
+import path from "node:path";
+
+import { SessionEventBus } from "./eventBus.js";
+import type {
+  AuthState,
+  ChatMessage,
+  ChatSummary,
+  HistoryRange,
+  TdlibEvent,
+  TelegramAdapter,
+  TelegramSessionInfo,
+} from "./types.js";
+
+type RawTdClient = {
+  connect: () => Promise<void>;
+  close: () => Promise<void>;
+  invoke: (query: Record<string, unknown>) => Promise<any>;
+  on: (event: "update" | "error", listener: (...args: any[]) => void) => void;
+};
+
+interface TdlibSession {
+  info: TelegramSessionInfo;
+  client: RawTdClient;
+  myUserId?: number;
+  chatsCache: Map<number, ChatSummary>;
+}
+
+type TdChatListType = "chatListMain" | "chatListArchive";
+
+interface TdlibRuntimeConfig {
+  apiId: number;
+  apiHash: string;
+  dataDir: string;
+  tdlibPath?: string;
+}
+
+export class TdlibTelegramAdapter implements TelegramAdapter {
+  private readonly sessions = new Map<string, TdlibSession>();
+
+  constructor(
+    private readonly bus: SessionEventBus,
+    private readonly config: TdlibRuntimeConfig,
+  ) {}
+
+  async createSession(sessionId: string): Promise<void> {
+    const client = await this.buildClient(sessionId);
+    const session: TdlibSession = {
+      info: {
+        sessionId,
+        authState: "wait_phone_number",
+        createdAt: Date.now(),
+      },
+      client,
+      chatsCache: new Map(),
+    };
+    this.sessions.set(sessionId, session);
+
+    client.on("update", (update: any) => {
+      void this.handleUpdate(sessionId, update);
+    });
+
+    client.on("error", (error: Error) => {
+      this.emit(sessionId, "errors", { message: error.message });
+    });
+
+    try {
+      await client.connect();
+    } catch (error) {
+      this.sessions.delete(sessionId);
+      throw this.formatTdlibLoadError(error);
+    }
+    this.emit(sessionId, "auth_state", { authState: "wait_phone_number" });
+  }
+
+  async destroySession(sessionId: string): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      return;
+    }
+    await session.client.close();
+    this.sessions.delete(sessionId);
+    this.bus.clear(sessionId);
+  }
+
+  getSessionInfo(sessionId: string): TelegramSessionInfo {
+    return this.mustGetSession(sessionId).info;
+  }
+
+  async setPhoneNumber(sessionId: string, phoneNumber: string): Promise<void> {
+    const session = this.mustGetSession(sessionId);
+    session.info.qrLink = undefined;
+    await session.client.invoke({
+      _: "setAuthenticationPhoneNumber",
+      phone_number: phoneNumber,
+      settings: {
+        _: "phoneNumberAuthenticationSettings",
+        allow_flash_call: false,
+        allow_missed_call: false,
+        is_current_phone_number: false,
+      },
+    });
+  }
+
+  async startQrAuthentication(sessionId: string): Promise<void> {
+    const session = this.mustGetSession(sessionId);
+    await session.client.invoke({
+      _: "requestQrCodeAuthentication",
+      other_user_ids: [],
+    });
+    session.info.authState = "wait_other_device_confirmation";
+    this.emit(sessionId, "auth_state", {
+      authState: session.info.authState,
+      qrLink: session.info.qrLink,
+    });
+  }
+
+  async submitCode(sessionId: string, code: string): Promise<void> {
+    const session = this.mustGetSession(sessionId);
+    session.info.qrLink = undefined;
+    await session.client.invoke({
+      _: "checkAuthenticationCode",
+      code,
+    });
+  }
+
+  async submitPassword(sessionId: string, password: string): Promise<void> {
+    const session = this.mustGetSession(sessionId);
+    session.info.qrLink = undefined;
+    await session.client.invoke({
+      _: "checkAuthenticationPassword",
+      password,
+    });
+  }
+
+  async listChats(sessionId: string, limit = 100): Promise<ChatSummary[]> {
+    const session = this.mustGetSession(sessionId);
+    const requestedLimit = Math.min(Math.max(limit * 6, 500), 2000);
+    const cachedChats = [...session.chatsCache.values()].sort((a, b) => (b.lastMessageTs ?? 0) - (a.lastMessageTs ?? 0));
+    const allChatIds = new Set<number>();
+    for (const listType of ["chatListMain", "chatListArchive"] as TdChatListType[]) {
+      await this.preloadChats(session, listType, 6);
+      const result = await session.client.invoke({
+        _: "getChats",
+        chat_list: {
+          _: listType,
+        },
+        limit: requestedLimit,
+      });
+
+      const chatIds = (result?.chat_ids ?? []) as number[];
+      for (const chatId of chatIds) {
+        allChatIds.add(chatId);
+      }
+    }
+    const chatIds = [...allChatIds];
+    if (chatIds.length === 0) {
+      const fallback = cachedChats.slice(0, limit);
+      this.emit(sessionId, "chats_updated", { chats: fallback });
+      return fallback;
+    }
+
+    const chats: ChatSummary[] = [];
+    const chunkSize = 20;
+    const privateTarget = Math.max(limit * 2, limit);
+
+    for (let index = 0; index < chatIds.length; index += chunkSize) {
+      const chunk = chatIds.slice(index, index + chunkSize);
+      const mappedChunk = await Promise.all(
+        chunk.map(async (chatId) => {
+          try {
+            const chat = await session.client.invoke({
+              _: "getChat",
+              chat_id: chatId,
+            });
+            return this.mapChat(chat);
+          } catch {
+            return null;
+          }
+        }),
+      );
+
+      for (const mapped of mappedChunk) {
+        if (!mapped || mapped.isPrivate === false) {
+          continue;
+        }
+        session.chatsCache.set(mapped.id, mapped);
+        chats.push(mapped);
+      }
+
+      if (chats.length >= privateTarget) {
+        break;
+      }
+    }
+
+    const sorted = (chats.length > 0 ? chats : cachedChats)
+      .sort((a, b) => (b.lastMessageTs ?? 0) - (a.lastMessageTs ?? 0))
+      .slice(0, limit);
+
+    this.emit(sessionId, "chats_updated", { chats: sorted });
+    return sorted;
+  }
+
+  async getChatHistory(
+    sessionId: string,
+    chatId: number,
+    limit: number,
+    fromMessageId?: number,
+  ): Promise<ChatMessage[]> {
+    const session = this.mustGetSession(sessionId);
+    const response = await session.client.invoke({
+      _: "getChatHistory",
+      chat_id: chatId,
+      from_message_id: fromMessageId ?? 0,
+      offset: 0,
+      limit,
+      only_local: false,
+    });
+
+    const result = (response?.messages ?? [])
+      .map((message: any) => this.mapMessage(session, chatId, message))
+      .filter((message: ChatMessage | null): message is ChatMessage => Boolean(message))
+      .sort((a: ChatMessage, b: ChatMessage) => a.timestamp - b.timestamp);
+
+    this.emit(sessionId, "history_loaded", { chatId, count: result.length });
+    return result;
+  }
+
+  async getChatHistoryByDate(
+    sessionId: string,
+    chatId: number,
+    range: HistoryRange,
+  ): Promise<ChatMessage[]> {
+    const session = this.mustGetSession(sessionId);
+    const inRange: ChatMessage[] = [];
+
+    let fromMessageId = 0;
+    let keepLoading = true;
+    let iteration = 0;
+
+    while (keepLoading && iteration < 40) {
+      iteration += 1;
+      const response = await session.client.invoke({
+        _: "getChatHistory",
+        chat_id: chatId,
+        from_message_id: fromMessageId,
+        offset: 0,
+        limit: 100,
+        only_local: false,
+      });
+
+      const messages = (response?.messages ?? []) as any[];
+      if (messages.length === 0) {
+        break;
+      }
+
+      for (const rawMessage of messages) {
+        const mapped = this.mapMessage(session, chatId, rawMessage);
+        if (!mapped) {
+          continue;
+        }
+        if (mapped.timestamp >= range.startTs && mapped.timestamp <= range.endTs) {
+          inRange.push(mapped);
+        }
+      }
+
+      const oldest = messages[messages.length - 1];
+      const oldestTs = Number(oldest?.date ?? 0) * 1000;
+      if (oldestTs < range.startTs) {
+        keepLoading = false;
+      }
+      fromMessageId = Number(oldest?.id ?? 0);
+      if (fromMessageId === 0) {
+        break;
+      }
+    }
+
+    const deduped = new Map<number, ChatMessage>();
+    for (const message of inRange) {
+      deduped.set(message.id, message);
+    }
+
+    const result = [...deduped.values()].sort((a, b) => a.timestamp - b.timestamp);
+    this.emit(sessionId, "history_loaded", { chatId, count: result.length, mode: "range" });
+    return result;
+  }
+
+  async getMessagesByIds(sessionId: string, chatId: number, ids: number[]): Promise<ChatMessage[]> {
+    const session = this.mustGetSession(sessionId);
+    if (ids.length === 0) {
+      return [];
+    }
+
+    const response = await session.client.invoke({
+      _: "getMessages",
+      chat_id: chatId,
+      message_ids: ids,
+    });
+
+    return (response?.messages ?? [])
+      .map((message: any) => this.mapMessage(session, chatId, message))
+      .filter((message: ChatMessage | null): message is ChatMessage => Boolean(message))
+      .sort((a: ChatMessage, b: ChatMessage) => a.timestamp - b.timestamp);
+  }
+
+  subscribe(sessionId: string, listener: (event: TdlibEvent) => void): () => void {
+    return this.bus.subscribe(sessionId, listener);
+  }
+
+  private async buildClient(sessionId: string): Promise<RawTdClient> {
+    const tdlModule = await import("tdl");
+    const addonModule = await import("tdl-tdlib-addon");
+
+    const ClientCtor = (tdlModule as any).Client;
+    const TDLibCtor = (addonModule as any).TDLib;
+
+    const sessionDir = path.join(this.config.dataDir, sessionId);
+    const dbDir = path.join(sessionDir, "db");
+    const filesDir = path.join(sessionDir, "files");
+    fs.mkdirSync(dbDir, { recursive: true });
+    fs.mkdirSync(filesDir, { recursive: true });
+
+    const resolvedTdlibPath = this.resolveTdlibPath();
+    let tdlibInstance: unknown;
+    try {
+      tdlibInstance = resolvedTdlibPath ? new TDLibCtor(resolvedTdlibPath) : new TDLibCtor();
+    } catch (error) {
+      throw this.formatTdlibLoadError(error);
+    }
+
+    const client = new ClientCtor(tdlibInstance, {
+      apiId: this.config.apiId,
+      apiHash: this.config.apiHash,
+      databaseDirectory: dbDir,
+      filesDirectory: filesDir,
+      useDatabase: true,
+      useFileDatabase: true,
+      useChatInfoDatabase: true,
+      useMessageDatabase: true,
+      enableStorageOptimizer: true,
+    });
+
+    return client as RawTdClient;
+  }
+
+  private resolveTdlibPath(): string | undefined {
+    const explicitPaths = [this.config.tdlibPath, process.env.TDLIB_LIBRARY_PATH].filter(
+      (value): value is string => Boolean(value && value.trim()),
+    );
+
+    for (const candidate of explicitPaths) {
+      if (fs.existsSync(candidate)) {
+        return candidate;
+      }
+    }
+
+    const commonMacPaths = [
+      "/opt/homebrew/lib/libtdjson.dylib",
+      "/usr/local/lib/libtdjson.dylib",
+      "/usr/lib/libtdjson.dylib",
+    ];
+
+    for (const candidate of commonMacPaths) {
+      if (fs.existsSync(candidate)) {
+        return candidate;
+      }
+    }
+
+    return undefined;
+  }
+
+  private formatTdlibLoadError(error: unknown): Error {
+    const message = error instanceof Error ? error.message : String(error);
+    const likelyMissingNativeLibrary =
+      message.includes("Dynamic Loading Error") || message.includes("libtdjson");
+
+    if (!likelyMissingNativeLibrary) {
+      return error instanceof Error ? error : new Error("TDLib initialization failed");
+    }
+
+    return new Error(
+      "TDLib native library (libtdjson.dylib) is missing. Install TDLib and set TDLIB_LIBRARY_PATH, " +
+        "for example: /opt/homebrew/lib/libtdjson.dylib. You can also switch to TDLIB_MODE=mock to test without Telegram.",
+    );
+  }
+
+  private async handleUpdate(sessionId: string, update: any): Promise<void> {
+    if (!update || typeof update !== "object") {
+      return;
+    }
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      return;
+    }
+
+    if (update._ === "updateAuthorizationState") {
+      const authState = this.mapAuthState(update.authorization_state);
+      session.info.authState = authState;
+      session.info.qrLink =
+        authState === "wait_other_device_confirmation"
+          ? String(update.authorization_state?.link ?? "")
+          : undefined;
+      this.emit(sessionId, "auth_state", {
+        authState,
+        qrLink: session.info.qrLink,
+      });
+
+      if (authState === "ready") {
+        try {
+          const me = await session.client.invoke({ _: "getMe" });
+          session.myUserId = Number(me?.id ?? 0);
+          await this.listChats(sessionId, 100);
+        } catch (error) {
+          this.emit(sessionId, "errors", {
+            message: error instanceof Error ? error.message : "Failed to load profile",
+          });
+        }
+      }
+      return;
+    }
+
+    if (update._ === "updateNewMessage") {
+      const chatId = Number(update.message?.chat_id ?? 0);
+      const mapped = this.mapMessage(session, chatId, update.message);
+      if (!mapped) {
+        return;
+      }
+      this.emit(sessionId, "message_received", {
+        chatId,
+        message: mapped,
+      });
+      return;
+    }
+
+    if (update._ === "updateNewChat" || update._ === "updateChatLastMessage") {
+      try {
+        const chats = await this.listChats(sessionId, 100);
+        this.emit(sessionId, "chats_updated", { chats });
+      } catch (error) {
+        this.emit(sessionId, "errors", {
+          message: error instanceof Error ? error.message : "Failed to refresh chats",
+        });
+      }
+    }
+  }
+
+  private mapAuthState(rawState: any): AuthState {
+    const state = rawState?._;
+    switch (state) {
+      case "authorizationStateWaitPhoneNumber":
+        return "wait_phone_number";
+      case "authorizationStateWaitOtherDeviceConfirmation":
+        return "wait_other_device_confirmation";
+      case "authorizationStateWaitCode":
+        return "wait_code";
+      case "authorizationStateWaitPassword":
+        return "wait_password";
+      case "authorizationStateReady":
+        return "ready";
+      default:
+        return "closed";
+    }
+  }
+
+  private mapChat(chat: any): ChatSummary {
+    const lastMessageTs = Number(chat?.last_message?.date ?? 0) * 1000;
+    return {
+      id: Number(chat?.id ?? 0),
+      title: String(chat?.title ?? "Unknown chat"),
+      unreadCount: Number(chat?.unread_count ?? 0),
+      lastMessageSnippet: this.extractMessageText(chat?.last_message),
+      lastMessageTs: Number.isFinite(lastMessageTs) ? lastMessageTs : undefined,
+      isPrivate: this.isPrivateChat(chat),
+    };
+  }
+
+  private mapMessage(session: TdlibSession, chatId: number, message: any): ChatMessage | null {
+    const text = this.extractMessageText(message);
+
+    const senderUserId = this.extractSenderUserId(message?.sender_id);
+    const senderLabel = senderUserId !== null && senderUserId === session.myUserId ? "Me" : "Other";
+
+    return {
+      id: Number(message?.id ?? 0),
+      chatId,
+      senderLabel,
+      senderId: senderUserId ?? undefined,
+      text,
+      timestamp: Number(message?.date ?? 0) * 1000,
+    };
+  }
+
+  private extractSenderUserId(senderId: any): number | null {
+    if (!senderId || typeof senderId !== "object") {
+      return null;
+    }
+    const type = this.readTdType(senderId);
+    if (type === "messageSenderUser") {
+      return Number(senderId.user_id ?? 0);
+    }
+    return null;
+  }
+
+  private extractMessageText(message: any): string {
+    const content = message?.content;
+    if (!content || typeof content !== "object") {
+      return "[Unsupported message]";
+    }
+
+    const contentType = this.readTdType(content);
+
+    if (contentType === "messageText") {
+      return String(content.text?.text ?? "").trim() || "[Text message]";
+    }
+
+    if (contentType === "messagePhoto") {
+      return String(content.caption?.text ?? "").trim() || "[Photo]";
+    }
+
+    if (contentType === "messageDocument") {
+      return String(content.caption?.text ?? "").trim() || "[Document]";
+    }
+
+    if (contentType === "messageVideo") {
+      return String(content.caption?.text ?? "").trim() || "[Video]";
+    }
+
+    if (contentType === "messageAudio") {
+      return String(content.caption?.text ?? "").trim() || "[Audio]";
+    }
+
+    if (contentType === "messageAnimation") {
+      return String(content.caption?.text ?? "").trim() || "[GIF]";
+    }
+
+    if (contentType === "messageVoiceNote") {
+      return "[Voice message]";
+    }
+
+    if (contentType === "messageSticker") {
+      return "[Sticker]";
+    }
+
+    if (contentType === "messageCall") {
+      return "[Call]";
+    }
+
+    if (contentType === "messageChatAddMembers") {
+      return "[Members added]";
+    }
+
+    if (contentType === "messageChatDeleteMember") {
+      return "[Member removed]";
+    }
+
+    if (contentType === "messagePinMessage") {
+      return "[Pinned message]";
+    }
+
+    return `[${String(contentType ?? "Unsupported message")}]`;
+  }
+
+  private isPrivateChat(chat: any): boolean | undefined {
+    const chatType = chat?.type;
+    const typeName = this.readTdType(chatType);
+    const normalizedType = String(typeName ?? "").toLowerCase();
+    if (normalizedType.includes("private") || normalizedType.includes("secret")) {
+      return true;
+    }
+    if (
+      normalizedType.includes("basicgroup") ||
+      normalizedType.includes("supergroup") ||
+      normalizedType.includes("channel")
+    ) {
+      return false;
+    }
+
+    if (chatType && typeof chatType === "object") {
+      if (
+        this.hasPositiveId(chatType.user_id) ||
+        this.hasPositiveId(chatType.userId) ||
+        this.hasPositiveId(chatType.secret_chat_id) ||
+        this.hasPositiveId(chatType.secretChatId)
+      ) {
+        return true;
+      }
+      if (
+        this.hasPositiveId(chatType.basic_group_id) ||
+        this.hasPositiveId(chatType.basicGroupId) ||
+        this.hasPositiveId(chatType.supergroup_id) ||
+        this.hasPositiveId(chatType.supergroupId) ||
+        this.hasPositiveId(chatType.channel_id) ||
+        this.hasPositiveId(chatType.channelId)
+      ) {
+        return false;
+      }
+    }
+
+    return undefined;
+  }
+
+  private hasPositiveId(value: unknown): boolean {
+    if (typeof value === "number") {
+      return Number.isFinite(value) && value > 0;
+    }
+    if (typeof value === "bigint") {
+      return value > 0n;
+    }
+    if (typeof value === "string") {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) && parsed > 0;
+    }
+    return false;
+  }
+
+  private emit(sessionId: string, type: TdlibEvent["type"], payload: unknown): void {
+    this.bus.emit({
+      type,
+      sessionId,
+      payload,
+      ts: Date.now(),
+    });
+  }
+
+  private async preloadChats(
+    session: TdlibSession,
+    listType: TdChatListType,
+    attempts: number,
+  ): Promise<void> {
+    for (let index = 0; index < attempts; index += 1) {
+      try {
+        await session.client.invoke({
+          _: "loadChats",
+          chat_list: {
+            _: listType,
+          },
+          limit: 100,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+        if (message.includes("chat list is empty")) {
+          break;
+        }
+        if (message.includes("flood") || message.includes("too many requests")) {
+          break;
+        }
+      }
+    }
+  }
+
+  private readTdType(entity: any): string | undefined {
+    if (!entity || typeof entity !== "object") {
+      return undefined;
+    }
+    if (typeof entity._ === "string") {
+      return entity._;
+    }
+    if (typeof entity["@type"] === "string") {
+      return entity["@type"];
+    }
+    if (typeof entity.type === "string") {
+      return entity.type;
+    }
+    return undefined;
+  }
+
+  private mustGetSession(sessionId: string): TdlibSession {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      throw new Error(`Unknown session ${sessionId}`);
+    }
+    return session;
+  }
+}

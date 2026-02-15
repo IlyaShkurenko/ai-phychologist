@@ -1,0 +1,270 @@
+import cors from "cors";
+import dotenv from "dotenv";
+import express from "express";
+import { customAlphabet } from "nanoid";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { z } from "zod";
+
+import { createAdapter } from "./adapterFactory.js";
+
+dotenv.config();
+const tdlibModuleDir = path.dirname(fileURLToPath(import.meta.url));
+for (const candidatePath of [
+  path.resolve(process.cwd(), ".env"),
+  path.resolve(process.cwd(), "../.env"),
+  path.resolve(tdlibModuleDir, "../.env"),
+  path.resolve(tdlibModuleDir, "../../.env"),
+]) {
+  dotenv.config({ path: candidatePath });
+}
+
+const app = express();
+app.use(cors());
+app.use(express.json({ limit: "1mb" }));
+
+const port = Number(process.env.TDLIB_SERVICE_PORT ?? 4002);
+const mode = (process.env.TDLIB_MODE ?? "mock") as "mock" | "real";
+const apiId = process.env.TDLIB_API_ID ? Number(process.env.TDLIB_API_ID) : undefined;
+const apiHash = process.env.TDLIB_API_HASH;
+const tdlibPath = process.env.TDLIB_LIBRARY_PATH;
+const tdlibDataDir = process.env.TDLIB_DATA_DIR ?? "./tdlib-data";
+
+const { adapter } = createAdapter({
+  mode,
+  apiId,
+  apiHash,
+  tdlibPath,
+  tdlibDataDir,
+});
+
+const nanoid = customAlphabet("1234567890abcdefghijklmnopqrstuvwxyz", 16);
+const sessions = new Set<string>();
+
+const phoneSchema = z.object({
+  phoneNumber: z.string().min(6),
+});
+
+const resumeSchema = z.object({
+  sessionId: z.string().min(8).max(128),
+});
+
+const codeSchema = z.object({
+  code: z.string().min(3),
+});
+
+const passwordSchema = z.object({
+  password: z.string().min(1),
+});
+
+const idsSchema = z.object({
+  ids: z.array(z.number().int()).max(1000),
+});
+
+app.get("/health", (_req, res) => {
+  res.json({ ok: true, mode });
+});
+
+app.post("/sessions", async (_req, res) => {
+  try {
+    const sessionId = nanoid();
+    await adapter.createSession(sessionId);
+    sessions.add(sessionId);
+    const info = adapter.getSessionInfo(sessionId);
+    res.status(201).json({ sessionId, authState: info.authState });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.post("/sessions/resume", async (req, res) => {
+  try {
+    const { sessionId } = resumeSchema.parse(req.body);
+    if (!sessions.has(sessionId)) {
+      await adapter.createSession(sessionId);
+      sessions.add(sessionId);
+    }
+    const info = adapter.getSessionInfo(sessionId);
+    res.status(200).json({ sessionId, authState: info.authState });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.get("/sessions/:sessionId", (req, res) => {
+  try {
+    const sessionId = req.params.sessionId;
+    assertSessionExists(sessionId);
+    const info = adapter.getSessionInfo(sessionId);
+    res.json(info);
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.delete("/sessions/:sessionId", async (req, res) => {
+  try {
+    const sessionId = req.params.sessionId;
+    assertSessionExists(sessionId);
+    await adapter.destroySession(sessionId);
+    sessions.delete(sessionId);
+    res.json({ ok: true });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.post("/sessions/:sessionId/auth/phone", async (req, res) => {
+  try {
+    const sessionId = req.params.sessionId;
+    assertSessionExists(sessionId);
+    const { phoneNumber } = phoneSchema.parse(req.body);
+    await adapter.setPhoneNumber(sessionId, phoneNumber);
+    const info = adapter.getSessionInfo(sessionId);
+    res.json({ ok: true, authState: info.authState });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.post("/sessions/:sessionId/auth/qr", async (req, res) => {
+  try {
+    const sessionId = req.params.sessionId;
+    assertSessionExists(sessionId);
+    await adapter.startQrAuthentication(sessionId);
+    const info = adapter.getSessionInfo(sessionId);
+    res.json({ ok: true, authState: info.authState, qrLink: info.qrLink });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.post("/sessions/:sessionId/auth/code", async (req, res) => {
+  try {
+    const sessionId = req.params.sessionId;
+    assertSessionExists(sessionId);
+    const { code } = codeSchema.parse(req.body);
+    await adapter.submitCode(sessionId, code);
+    const info = adapter.getSessionInfo(sessionId);
+    res.json({ ok: true, authState: info.authState });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.post("/sessions/:sessionId/auth/password", async (req, res) => {
+  try {
+    const sessionId = req.params.sessionId;
+    assertSessionExists(sessionId);
+    const { password } = passwordSchema.parse(req.body);
+    await adapter.submitPassword(sessionId, password);
+    const info = adapter.getSessionInfo(sessionId);
+    res.json({ ok: true, authState: info.authState });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.get("/sessions/:sessionId/chats", async (req, res) => {
+  try {
+    const sessionId = req.params.sessionId;
+    assertSessionExists(sessionId);
+    const limit = Number(req.query.limit ?? 100);
+    const chats = await adapter.listChats(sessionId, limit);
+    res.json({ chats });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.get("/sessions/:sessionId/chats/:chatId/history", async (req, res) => {
+  try {
+    const sessionId = req.params.sessionId;
+    assertSessionExists(sessionId);
+    const chatId = Number(req.params.chatId);
+    const limit = Number(req.query.limit ?? 100);
+    const fromMessageId = req.query.fromMessageId ? Number(req.query.fromMessageId) : undefined;
+
+    const messages = await adapter.getChatHistory(sessionId, chatId, limit, fromMessageId);
+    res.json({ messages });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.get("/sessions/:sessionId/chats/:chatId/history-by-date", async (req, res) => {
+  try {
+    const sessionId = req.params.sessionId;
+    assertSessionExists(sessionId);
+    const chatId = Number(req.params.chatId);
+    const startTs = Number(req.query.startTs);
+    const endTs = Number(req.query.endTs);
+
+    if (!Number.isFinite(startTs) || !Number.isFinite(endTs)) {
+      throw new Error("startTs and endTs are required");
+    }
+
+    const messages = await adapter.getChatHistoryByDate(sessionId, chatId, { startTs, endTs });
+    res.json({ messages });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.post("/sessions/:sessionId/chats/:chatId/messages/by-ids", async (req, res) => {
+  try {
+    const sessionId = req.params.sessionId;
+    assertSessionExists(sessionId);
+    const chatId = Number(req.params.chatId);
+    const { ids } = idsSchema.parse(req.body);
+
+    const messages = await adapter.getMessagesByIds(sessionId, chatId, ids);
+    res.json({ messages });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.get("/sessions/:sessionId/events", (req, res) => {
+  try {
+    const sessionId = req.params.sessionId;
+    assertSessionExists(sessionId);
+
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+    res.flushHeaders();
+
+    const unsubscribe = adapter.subscribe(sessionId, (event) => {
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+    });
+
+    const heartbeat = setInterval(() => {
+      res.write(`event: heartbeat\ndata: ${Date.now()}\n\n`);
+    }, 20_000);
+
+    req.on("close", () => {
+      clearInterval(heartbeat);
+      unsubscribe();
+      res.end();
+    });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.listen(port, () => {
+  console.log(`tdlib-service listening on :${port} in ${mode} mode`);
+});
+
+function assertSessionExists(sessionId: string): void {
+  if (!sessions.has(sessionId)) {
+    throw new Error(`Unknown session ${sessionId}`);
+  }
+}
+
+function handleError(res: express.Response, error: unknown): void {
+  const message = error instanceof Error ? error.message : "Unexpected error";
+  const status = message.includes("Unknown session") ? 404 : 400;
+  res.status(status).json({ error: message });
+}
