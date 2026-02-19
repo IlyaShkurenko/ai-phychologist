@@ -44,6 +44,10 @@ export class TdlibTelegramAdapter implements TelegramAdapter {
   ) {}
 
   async createSession(sessionId: string): Promise<void> {
+    if (this.sessions.has(sessionId)) {
+      return;
+    }
+
     const client = await this.buildClient(sessionId);
     const session: TdlibSession = {
       info: {
@@ -66,11 +70,26 @@ export class TdlibTelegramAdapter implements TelegramAdapter {
 
     try {
       await client.connect();
+      const authStateRaw = await this.invokeWithTimeout<any>(
+        session,
+        {
+          _: "getAuthorizationState",
+        },
+        4_000,
+      );
+      const authState = this.mapAuthState(authStateRaw);
+      session.info.authState = authState;
+      if (authState === "wait_other_device_confirmation") {
+        session.info.qrLink = String(authStateRaw?.link ?? "");
+      }
     } catch (error) {
       this.sessions.delete(sessionId);
       throw this.formatTdlibLoadError(error);
     }
-    this.emit(sessionId, "auth_state", { authState: "wait_phone_number" });
+    this.emit(sessionId, "auth_state", {
+      authState: session.info.authState,
+      qrLink: session.info.qrLink,
+    });
   }
 
   async destroySession(sessionId: string): Promise<void> {
@@ -135,27 +154,38 @@ export class TdlibTelegramAdapter implements TelegramAdapter {
 
   async listChats(sessionId: string, limit = 100): Promise<ChatSummary[]> {
     const session = this.mustGetSession(sessionId);
-    const requestedLimit = Math.min(Math.max(limit * 6, 500), 2000);
-    const cachedChats = [...session.chatsCache.values()].sort((a, b) => (b.lastMessageTs ?? 0) - (a.lastMessageTs ?? 0));
+    const requestedLimit = Math.min(Math.max(limit * 3, 200), 1000);
+    const cachedChatsAtStart = [...session.chatsCache.values()].sort(
+      (a, b) => (b.lastMessageTs ?? 0) - (a.lastMessageTs ?? 0),
+    );
     const allChatIds = new Set<number>();
+    const startedAt = Date.now();
     for (const listType of ["chatListMain", "chatListArchive"] as TdChatListType[]) {
-      await this.preloadChats(session, listType, 6);
-      const result = await session.client.invoke({
-        _: "getChats",
-        chat_list: {
-          _: listType,
-        },
-        limit: requestedLimit,
-      });
+      await this.preloadChats(session, listType, 2);
+      try {
+        const result = await this.invokeWithTimeout<{ chat_ids?: number[] }>(
+          session,
+          {
+            _: "getChats",
+            chat_list: {
+              _: listType,
+            },
+            limit: requestedLimit,
+          },
+          8_000,
+        );
 
-      const chatIds = (result?.chat_ids ?? []) as number[];
-      for (const chatId of chatIds) {
-        allChatIds.add(chatId);
+        const chatIds = (result?.chat_ids ?? []) as number[];
+        for (const chatId of chatIds) {
+          allChatIds.add(chatId);
+        }
+      } catch {
+        continue;
       }
     }
     const chatIds = [...allChatIds];
     if (chatIds.length === 0) {
-      const fallback = cachedChats.slice(0, limit);
+      const fallback = cachedChatsAtStart.slice(0, limit);
       this.emit(sessionId, "chats_updated", { chats: fallback });
       return fallback;
     }
@@ -165,14 +195,21 @@ export class TdlibTelegramAdapter implements TelegramAdapter {
     const privateTarget = Math.max(limit * 2, limit);
 
     for (let index = 0; index < chatIds.length; index += chunkSize) {
+      if (Date.now() - startedAt > 20_000) {
+        break;
+      }
       const chunk = chatIds.slice(index, index + chunkSize);
       const mappedChunk = await Promise.all(
         chunk.map(async (chatId) => {
           try {
-            const chat = await session.client.invoke({
-              _: "getChat",
-              chat_id: chatId,
-            });
+            const chat = await this.invokeWithTimeout(
+              session,
+              {
+                _: "getChat",
+                chat_id: chatId,
+              },
+              3_000,
+            );
             return this.mapChat(chat);
           } catch {
             return null;
@@ -193,9 +230,13 @@ export class TdlibTelegramAdapter implements TelegramAdapter {
       }
     }
 
-    const sorted = (chats.length > 0 ? chats : cachedChats)
+    const fromCache = [...session.chatsCache.values()]
       .sort((a, b) => (b.lastMessageTs ?? 0) - (a.lastMessageTs ?? 0))
       .slice(0, limit);
+    const sorted =
+      fromCache.length > 0
+        ? fromCache
+        : chats.sort((a, b) => (b.lastMessageTs ?? 0) - (a.lastMessageTs ?? 0)).slice(0, limit);
 
     this.emit(sessionId, "chats_updated", { chats: sorted });
     return sorted;
@@ -479,6 +520,7 @@ export class TdlibTelegramAdapter implements TelegramAdapter {
 
     const senderUserId = this.extractSenderUserId(message?.sender_id);
     const senderLabel = senderUserId !== null && senderUserId === session.myUserId ? "Me" : "Other";
+    const replyToMessageId = this.extractReplyToMessageId(message);
 
     return {
       id: Number(message?.id ?? 0),
@@ -487,7 +529,51 @@ export class TdlibTelegramAdapter implements TelegramAdapter {
       senderId: senderUserId ?? undefined,
       text,
       timestamp: Number(message?.date ?? 0) * 1000,
+      replyToMessageId,
     };
+  }
+
+  private extractReplyToMessageId(message: any): number | undefined {
+    const directReplyId = Number(
+      message?.reply_to_message_id ??
+        message?.reply_to?.message_id ??
+        message?.reply_to?.origin?.message_id ??
+        message?.content?.reply_to_message_id ??
+        0,
+    );
+    if (Number.isFinite(directReplyId) && directReplyId > 0) {
+      return directReplyId;
+    }
+
+    const replyTo = message?.reply_to;
+    if (!replyTo || typeof replyTo !== "object") {
+      return undefined;
+    }
+
+    const type = this.readTdType(replyTo);
+    if (type === "messageReplyToMessage") {
+      const id = Number(
+        replyTo.message_id ??
+          replyTo?.origin?.message_id ??
+          replyTo?.origin?.sender_message_id ??
+          0,
+      );
+      if (Number.isFinite(id) && id > 0) {
+        return id;
+      }
+    }
+
+    const nestedId = Number(
+      replyTo.message_id ??
+        replyTo?.origin?.message_id ??
+        replyTo?.origin?.sender_message_id ??
+        0,
+    );
+    if (Number.isFinite(nestedId) && nestedId > 0) {
+      return nestedId;
+    }
+
+    return undefined;
   }
 
   private extractSenderUserId(senderId: any): number | null {
@@ -629,13 +715,17 @@ export class TdlibTelegramAdapter implements TelegramAdapter {
   ): Promise<void> {
     for (let index = 0; index < attempts; index += 1) {
       try {
-        await session.client.invoke({
-          _: "loadChats",
-          chat_list: {
-            _: listType,
+        await this.invokeWithTimeout(
+          session,
+          {
+            _: "loadChats",
+            chat_list: {
+              _: listType,
+            },
+            limit: 100,
           },
-          limit: 100,
-        });
+          3_000,
+        );
       } catch (error) {
         const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
         if (message.includes("chat list is empty")) {
@@ -644,6 +734,28 @@ export class TdlibTelegramAdapter implements TelegramAdapter {
         if (message.includes("flood") || message.includes("too many requests")) {
           break;
         }
+      }
+    }
+  }
+
+  private async invokeWithTimeout<T>(
+    session: TdlibSession,
+    query: Record<string, unknown>,
+    timeoutMs: number,
+  ): Promise<T> {
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race<T>([
+        session.client.invoke(query) as Promise<T>,
+        new Promise<T>((_resolve, reject) => {
+          timeoutId = setTimeout(() => {
+            reject(new Error(`TDLib invoke timeout after ${timeoutMs}ms`));
+          }, timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
       }
     }
   }

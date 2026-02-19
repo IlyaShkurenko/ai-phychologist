@@ -13,6 +13,8 @@ export type TdlibEventType =
   | "message_received"
   | "errors";
 
+export type ChatKind = "private" | "group" | "channel" | "unknown";
+
 export interface TdlibEvent<T = unknown> {
   type: TdlibEventType;
   sessionId: string;
@@ -27,6 +29,7 @@ export interface ChatSummary {
   lastMessageSnippet?: string;
   lastMessageTs?: number;
   isPrivate?: boolean;
+  chatKind?: ChatKind;
 }
 
 export interface ChatMessage {
@@ -36,6 +39,7 @@ export interface ChatMessage {
   senderId?: number;
   text: string;
   timestamp: number;
+  replyToMessageId?: number;
 }
 
 export interface TelegramSessionInfo {

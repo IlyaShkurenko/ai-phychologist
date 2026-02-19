@@ -117,6 +117,7 @@ export function BottomSheet({
               <option value="Love">{t(locale, "sheet.theme.love")}</option>
               <option value="Work">{t(locale, "sheet.theme.work")}</option>
               <option value="Friendship">{t(locale, "sheet.theme.friendship")}</option>
+              <option value="Gaslighting">{t(locale, "sheet.theme.gaslighting")}</option>
             </select>
           </label>
 

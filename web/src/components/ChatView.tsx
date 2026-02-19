@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 
 import { localeCode, t } from "../i18n";
 import { DateRangePicker } from "./DateRangePicker";
@@ -46,6 +46,7 @@ export function ChatView({
   const shouldInitialScrollToBottomRef = useRef(false);
   const loadingOlderFromScrollRef = useRef(false);
   const prependSnapshotRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
+  const messageById = useMemo(() => new Map(messages.map((item) => [item.id, item] as const)), [messages]);
 
   useEffect(() => {
     shouldInitialScrollToBottomRef.current = true;
@@ -156,6 +157,19 @@ export function ChatView({
                     </strong>
                     <span>{new Date(message.timestamp).toLocaleString(localeCode(locale))}</span>
                   </div>
+                  {typeof message.replyToMessageId === "number" ? (
+                    <div className="message-reply-preview">
+                      <span className="message-reply-label">{t(locale, "chatView.replyTo")}</span>
+                      <strong>
+                        {messageById.get(message.replyToMessageId)?.senderLabel === "Me"
+                          ? t(locale, "chatView.sender.me")
+                          : messageById.get(message.replyToMessageId)?.senderLabel === "Other"
+                            ? t(locale, "chatView.sender.other")
+                            : `#${message.replyToMessageId}`}
+                      </strong>
+                      <p>{messageById.get(message.replyToMessageId)?.text ?? t(locale, "chatView.replyUnavailable")}</p>
+                    </div>
+                  ) : null}
                   <p>{message.text}</p>
                 </div>
               </label>

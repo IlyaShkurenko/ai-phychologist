@@ -40,6 +40,7 @@ const { adapter } = createAdapter({
 
 const nanoid = customAlphabet("1234567890abcdefghijklmnopqrstuvwxyz", 16);
 const sessions = new Set<string>();
+const sessionInitLocks = new Map<string, Promise<void>>();
 
 const phoneSchema = z.object({
   phoneNumber: z.string().min(6),
@@ -67,9 +68,8 @@ app.get("/health", (_req, res) => {
 
 app.post("/sessions", async (_req, res) => {
   try {
-    const sessionId = nanoid();
-    await adapter.createSession(sessionId);
-    sessions.add(sessionId);
+    const sessionId = await generateUniqueSessionId();
+    await ensureSessionInitialized(sessionId);
     const info = adapter.getSessionInfo(sessionId);
     res.status(201).json({ sessionId, authState: info.authState });
   } catch (error) {
@@ -80,10 +80,7 @@ app.post("/sessions", async (_req, res) => {
 app.post("/sessions/resume", async (req, res) => {
   try {
     const { sessionId } = resumeSchema.parse(req.body);
-    if (!sessions.has(sessionId)) {
-      await adapter.createSession(sessionId);
-      sessions.add(sessionId);
-    }
+    await ensureSessionInitialized(sessionId);
     const info = adapter.getSessionInfo(sessionId);
     res.status(200).json({ sessionId, authState: info.authState });
   } catch (error) {
@@ -260,6 +257,42 @@ app.listen(port, () => {
 function assertSessionExists(sessionId: string): void {
   if (!sessions.has(sessionId)) {
     throw new Error(`Unknown session ${sessionId}`);
+  }
+}
+
+async function generateUniqueSessionId(): Promise<string> {
+  let attempts = 0;
+  while (attempts < 5) {
+    attempts += 1;
+    const candidate = nanoid();
+    if (!sessions.has(candidate) && !sessionInitLocks.has(candidate)) {
+      return candidate;
+    }
+  }
+  throw new Error("Failed to generate unique session id");
+}
+
+async function ensureSessionInitialized(sessionId: string): Promise<void> {
+  if (sessions.has(sessionId)) {
+    return;
+  }
+
+  const inFlight = sessionInitLocks.get(sessionId);
+  if (inFlight) {
+    await inFlight;
+    return;
+  }
+
+  const initializePromise = (async () => {
+    await adapter.createSession(sessionId);
+    sessions.add(sessionId);
+  })();
+
+  sessionInitLocks.set(sessionId, initializePromise);
+  try {
+    await initializePromise;
+  } finally {
+    sessionInitLocks.delete(sessionId);
   }
 }
 

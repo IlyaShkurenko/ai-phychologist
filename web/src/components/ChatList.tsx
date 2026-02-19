@@ -69,7 +69,12 @@ export function ChatList({
         ))}
       </ul>
 
-      {loading && filtered.length === 0 ? <p className="muted">{t(locale, "chatList.loading")}</p> : null}
+      {loading ? (
+        <p className="muted chat-list-loading">
+          <span className="chat-list-spinner" aria-hidden="true" />
+          <span>{filtered.length > 0 ? t(locale, "chatList.loadingMore") : t(locale, "chatList.loading")}</span>
+        </p>
+      ) : null}
       {!loading && filtered.length === 0 ? <p className="muted">{t(locale, "chatList.empty")}</p> : null}
     </section>
   );

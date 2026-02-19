@@ -72,6 +72,7 @@ export class MockTelegramAdapter implements TelegramAdapter {
               senderId: 10,
               text: "Can we talk later?",
               timestamp: now - 1000 * 60 * 70,
+              replyToMessageId: 102,
             },
           ],
         ],

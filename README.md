@@ -52,7 +52,7 @@ Copy `.env.example` to `.env` and adjust values.
 - `API_PORT` (default `4001`)
 - `TDLIB_BASE_URL` (default `http://localhost:4002`)
 - `OPENAI_API_KEY` (optional; if empty, API uses fallback heuristic analysis)
-- `OPENAI_MODEL` (default `gpt-4o-mini`)
+- `OPENAI_MODEL` (default `gpt-5.2`)
 - `VITE_REQUEST_TIMEOUT_MS` (optional; default `60000`)
 - `TDLIB_REQUEST_TIMEOUT_MS` (optional; default `30000`)
 - `SESSION_TTL_MS` (default `604800000` = 7 days)

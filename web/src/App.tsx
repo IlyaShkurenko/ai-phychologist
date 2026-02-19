@@ -68,10 +68,30 @@ function sortChatsByRecent(chats: ChatSummary[]): ChatSummary[] {
 }
 
 function mergeChatSnapshots(current: ChatSummary[], incoming: ChatSummary[]): ChatSummary[] {
-  if (incoming.length === 0 && current.length > 0) {
+  if (incoming.length === 0) {
     return current;
   }
-  return incoming;
+
+  const byId = new Map<number, ChatSummary>();
+  for (const chat of current) {
+    byId.set(chat.id, chat);
+  }
+  for (const chat of incoming) {
+    const previous = byId.get(chat.id);
+    if (!previous) {
+      byId.set(chat.id, chat);
+      continue;
+    }
+    byId.set(chat.id, {
+      ...previous,
+      ...chat,
+      unreadCount: chat.unreadCount ?? previous.unreadCount,
+      lastMessageTs: chat.lastMessageTs ?? previous.lastMessageTs,
+      isPrivate: chat.isPrivate ?? previous.isPrivate,
+    });
+  }
+
+  return sortChatsByRecent([...byId.values()]).slice(0, 400);
 }
 
 function toStartOfDayTimestamp(date: Date): number {
@@ -139,6 +159,7 @@ export default function App(): JSX.Element {
   const [allowStorageOption, setAllowStorageOption] = useState(false);
   const pendingAnalysisRef = useRef<PendingAnalysis | null>(null);
   const activeChatLoadRef = useRef(0);
+  const restoreStartedRef = useRef(false);
 
   useEffect(() => {
     localStorage.setItem(LOCALE_STORAGE_KEY, locale);
@@ -170,9 +191,6 @@ export default function App(): JSX.Element {
         if (payload.chats) {
           const sortedIncoming = sortChatsByRecent(payload.chats);
           setChats((current) => mergeChatSnapshots(current, sortedIncoming));
-          if (sortedIncoming.length > 0) {
-            setIsChatsLoading(false);
-          }
         }
         return;
       }
@@ -211,6 +229,11 @@ export default function App(): JSX.Element {
   useSessionSocket(sessionId, handleTdlibEvent, handleSocketError);
 
   useEffect(() => {
+    if (restoreStartedRef.current) {
+      return;
+    }
+    restoreStartedRef.current = true;
+
     const savedSessionId = localStorage.getItem(SESSION_STORAGE_KEY);
     if (!savedSessionId) {
       setIsRestoringSession(false);
@@ -254,7 +277,17 @@ export default function App(): JSX.Element {
         let nextChats: ChatSummary[] = [];
         while (!cancelled && attempts < maxAttempts) {
           attempts += 1;
-          nextChats = await listChats(sessionId);
+          try {
+            nextChats = await listChats(sessionId);
+          } catch (error) {
+            const message = error instanceof Error ? error.message.toLowerCase() : "";
+            const isTimeout = message.includes("timeout");
+            if (isTimeout && attempts < maxAttempts) {
+              await wait(900);
+              continue;
+            }
+            throw error;
+          }
           if (nextChats.length > 0 || attempts >= maxAttempts) {
             break;
           }
