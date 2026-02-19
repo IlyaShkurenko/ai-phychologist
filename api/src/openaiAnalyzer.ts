@@ -1,7 +1,8 @@
 import OpenAI from "openai";
 import { z } from "zod";
 
-import type { AnalysisConfig, AnalysisMode, AnalysisResponse, ChatMessage, Locale } from "./types.js";
+import { GaslightingPipeline } from "./gaslightingPipeline.js";
+import type { AnalysisConfig, AnalysisMode, AnalysisResponse, ChatMessage, GaslightingResult, Locale } from "./types.js";
 
 const analysisResultSchema = z.object({
   summary: z.string(),
@@ -63,6 +64,7 @@ const analysisJsonSchema = {
 type AnalysisResultShape = z.infer<typeof analysisResultSchema>;
 type JsonRecord = Record<string, unknown>;
 type FallbackReason = "missing_key" | "invalid_response" | "openai_error";
+const GASLIGHTING_ANCHOR_SOURCE: "partner_only" | "both" = "partner_only";
 
 interface AnalyzeArgs {
   mode: AnalysisMode;
@@ -73,6 +75,7 @@ interface AnalyzeArgs {
 
 export class OpenAiAnalyzer {
   private readonly client?: OpenAI;
+  private readonly gaslightingPipeline?: GaslightingPipeline;
 
   constructor(
     private readonly apiKey: string | undefined,
@@ -80,10 +83,15 @@ export class OpenAiAnalyzer {
   ) {
     if (apiKey) {
       this.client = new OpenAI({ apiKey });
+      this.gaslightingPipeline = new GaslightingPipeline(this.client, this.model);
     }
   }
 
   async analyze(args: AnalyzeArgs): Promise<AnalysisResponse> {
+    if (args.config.theme === "Gaslighting") {
+      return this.analyzeGaslightingTheme(args);
+    }
+
     if (!this.client) {
       const fallback = this.fallbackAnalysis(args, "missing_key");
       return {
@@ -98,6 +106,197 @@ export class OpenAiAnalyzer {
       mode: args.mode,
       messageCount: args.messages.length,
       ...parsed,
+    };
+  }
+
+  private async analyzeGaslightingTheme(args: AnalyzeArgs): Promise<AnalysisResponse> {
+    if (!this.gaslightingPipeline) {
+      return this.fallbackGaslightingAnalysis(args, "missing_key");
+    }
+
+    try {
+      const gaslighting = await this.gaslightingPipeline.run(args.messages, args.locale, {
+        anchorSource: GASLIGHTING_ANCHOR_SOURCE,
+      });
+      return this.mapGaslightingResult(args, gaslighting);
+    } catch (error) {
+      console.error("Gaslighting pipeline failed:", error);
+      return this.fallbackGaslightingAnalysis(args, "openai_error");
+    }
+  }
+
+  private mapGaslightingResult(args: AnalyzeArgs, result: GaslightingResult): AnalysisResponse {
+    const isRu = args.locale === "ru";
+    const aggregates = result.aggregates;
+    const normalEngagementCount = result.episodes.filter((item) => item.step2.normal_engagement).length;
+    const topGaslighting = result.episodes
+      .filter((item) => item.gaslighting)
+      .slice(0, 3)
+      .map((item) => `${item.anchor.msg_id}: ${item.anchor.fact_span}`);
+
+    const verification = result.verification ?? [];
+    const supportedCount = verification.filter((item) => item.verdict === "supported").length;
+    const contradictedCount = verification.filter((item) => item.verdict === "contradicted").length;
+    const notFoundCount = verification.filter((item) => item.verdict === "not_found").length;
+
+    const summary = isRu
+      ? [
+          `Обнаружено эпизодов с якорными фактами: ${aggregates.total_episodes}.`,
+          `Эпизодов, соответствующих формуле газлайтинга (Fact_Denial AND (Perception_Attack OR Reality_Avoidance)): ${aggregates.gaslighting_episodes}.`,
+          `Повторяемость: ${repeatabilityLabel(aggregates.repeatability, args.locale)}.`,
+          verification.length > 0
+            ? `Верификация фактов: подтверждено ${supportedCount}, опровергнуто ${contradictedCount}, не найдено ${notFoundCount}.`
+            : undefined,
+        ]
+          .filter(Boolean)
+          .join(" ")
+      : [
+          `Detected episodes with anchor facts: ${aggregates.total_episodes}.`,
+          `Episodes matching gaslighting formula (Fact_Denial AND (Perception_Attack OR Reality_Avoidance)): ${aggregates.gaslighting_episodes}.`,
+          `Repeatability: ${repeatabilityLabel(aggregates.repeatability, args.locale)}.`,
+          verification.length > 0
+            ? `Fact verification: supported ${supportedCount}, contradicted ${contradictedCount}, not found ${notFoundCount}.`
+            : undefined,
+        ]
+          .filter(Boolean)
+          .join(" ");
+
+    return {
+      mode: args.mode,
+      messageCount: args.messages.length,
+      summary,
+      keySignals: {
+        redFlags:
+          aggregates.gaslighting_episodes > 0
+            ? [
+                isRu
+                  ? `Сигналов Fact_Denial: ${aggregates.marker_counts.fact_denial}`
+                  : `Fact Denial markers: ${aggregates.marker_counts.fact_denial}`,
+                isRu
+                  ? `Сигналов Perception_Attack: ${aggregates.marker_counts.perception_attack}`
+                  : `Perception Attack markers: ${aggregates.marker_counts.perception_attack}`,
+                isRu
+                  ? `Сигналов Reality_Avoidance: ${aggregates.marker_counts.reality_avoidance}`
+                  : `Reality Avoidance markers: ${aggregates.marker_counts.reality_avoidance}`,
+                ...topGaslighting.map((item) =>
+                  isRu ? `Пример эпизода: ${item}` : `Episode example: ${item}`,
+                ),
+              ]
+            : [
+                isRu
+                  ? "По строгой формуле газлайтинга подтвержденных эпизодов не найдено."
+                  : "No confirmed gaslighting episodes under the strict formula.",
+              ],
+        greenFlags: [
+          isRu
+            ? `Эпизодов с нормальным обсуждением факта: ${normalEngagementCount}`
+            : `Episodes with normal fact engagement: ${normalEngagementCount}`,
+          isRu
+            ? "Диагнозы не ставятся: результат отражает только структуру реплик."
+            : "No diagnosis is made: output reflects only message structure.",
+        ],
+        patterns: [
+          isRu
+            ? "Правило: Fact_Denial AND (Perception_Attack OR Reality_Avoidance)."
+            : "Rule: Fact_Denial AND (Perception_Attack OR Reality_Avoidance).",
+          isRu
+            ? `Повторяемость: ${repeatabilityLabel(aggregates.repeatability, args.locale)}`
+            : `Repeatability: ${repeatabilityLabel(aggregates.repeatability, args.locale)}`,
+        ],
+      },
+      suggestedReplies: isRu
+        ? [
+            "Давай зафиксируем один конкретный факт и проверим его по переписке.",
+            "Мне важно обсуждать событие напрямую, без оценок моей адекватности.",
+            "Если есть другое видение, давай уточним детали: когда и что именно было сказано.",
+          ]
+        : [
+            "Let’s fix one concrete fact and verify it against the chat history.",
+            "I want to discuss the event directly without evaluating my sanity.",
+            "If your view is different, let’s clarify details: when and what was said exactly.",
+          ],
+      outcomes: {
+        ifReply: isRu
+          ? "Фокус на проверяемых фактах обычно снижает путаницу и делает коммуникацию яснее."
+          : "Focusing on verifiable facts usually reduces confusion and improves clarity.",
+        ifNoReply: isRu
+          ? "Без прояснения структура взаимодействия, вызвавшая сомнения, может сохраниться."
+          : "Without clarification, the same interaction pattern may continue.",
+      },
+      gaslighting: result,
+    };
+  }
+
+  private fallbackGaslightingAnalysis(
+    args: AnalyzeArgs,
+    reason: "missing_key" | "openai_error",
+  ): AnalysisResponse {
+    const isRu = args.locale === "ru";
+    const reasonText =
+      reason === "missing_key"
+        ? isRu
+          ? "OpenAI ключ не настроен."
+          : "OpenAI API key is not configured."
+        : isRu
+          ? "Не удалось получить структурированный ответ модели."
+          : "Failed to get structured model output.";
+
+    return {
+      mode: args.mode,
+      messageCount: args.messages.length,
+      summary: isRu
+        ? `${reasonText} Пайплайн газлайтинга не выполнен полностью.`
+        : `${reasonText} Gaslighting pipeline could not be fully executed.`,
+      keySignals: {
+        redFlags: [
+          isRu
+            ? "Для детекции газлайтинга нужен структурированный вызов модели по шагам."
+            : "Gaslighting detection requires step-wise structured model calls.",
+        ],
+        greenFlags: [
+          isRu
+            ? "Старая логика анализа для других тем сохранена и работает отдельно."
+            : "Legacy analysis logic for other themes remains unchanged.",
+        ],
+        patterns: [
+          isRu
+            ? "Формула детекции: Fact_Denial AND (Perception_Attack OR Reality_Avoidance)."
+            : "Detection formula: Fact_Denial AND (Perception_Attack OR Reality_Avoidance).",
+        ],
+      },
+      suggestedReplies: isRu
+        ? [
+            "Сейчас я не могу надежно завершить шаговую проверку.",
+            "Можно повторить запуск позже или проверить настройки ключа API.",
+            "Для ручной проверки зафиксируйте факт и попросите ответ по существу.",
+          ]
+        : [
+            "I cannot complete the step-wise verification reliably right now.",
+            "Retry later or verify API key/model settings.",
+            "For manual review, fix one fact and ask for a direct response.",
+          ],
+      outcomes: {
+        ifReply: isRu
+          ? "Ручная фиксация фактов может удержать разговор в проверяемых рамках."
+          : "Manual fact framing can keep the conversation verifiable.",
+        ifNoReply: isRu
+          ? "Оценка рискует остаться неполной без структурированной проверки."
+          : "Assessment may remain incomplete without structured verification.",
+      },
+      gaslighting: {
+        episodes: [],
+        aggregates: {
+          total_episodes: 0,
+          gaslighting_episodes: 0,
+          gaslighting_ratio: 0,
+          repeatability: "single_or_none",
+          marker_counts: {
+            fact_denial: 0,
+            perception_attack: 0,
+            reality_avoidance: 0,
+          },
+        },
+      },
     };
   }
 
@@ -424,6 +623,35 @@ function localizeHelpMe(value: string, locale: Locale): string {
   };
   const map = locale === "ru" ? ruMap : enMap;
   return map[value] ?? value;
+}
+
+function repeatabilityLabel(
+  value: "single_or_none" | "suspicion" | "likely" | "stable_pattern",
+  locale: Locale,
+): string {
+  if (locale === "ru") {
+    switch (value) {
+      case "stable_pattern":
+        return "устойчивый паттерн (5+ эпизодов)";
+      case "likely":
+        return "вероятный паттерн (3-4 эпизода)";
+      case "suspicion":
+        return "подозрение (2 эпизода)";
+      default:
+        return "одиночный или отсутствует";
+    }
+  }
+
+  switch (value) {
+    case "stable_pattern":
+      return "stable pattern (5+ episodes)";
+    case "likely":
+      return "likely pattern (3-4 episodes)";
+    case "suspicion":
+      return "suspicion (2 episodes)";
+    default:
+      return "single or none";
+  }
 }
 
 function toRecord(value: unknown): JsonRecord | null {

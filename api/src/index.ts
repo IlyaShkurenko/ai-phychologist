@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import cors from "cors";
 import dotenv from "dotenv";
 import express from "express";
+import type { NextFunction, Request, Response } from "express";
 import { WebSocketServer } from "ws";
 import { z } from "zod";
 
@@ -30,10 +31,12 @@ app.use(cors());
 app.use(express.json({ limit: "1mb" }));
 
 const apiPort = Number(process.env.API_PORT ?? 4001);
+const isGcp = Boolean(process.env.GOOGLE_CLOUD_PROJECT);
+const extensiveLogging = process.env.EXTENSIVE_LOGGING === "true";
 const tdlibBaseUrl = process.env.TDLIB_BASE_URL ?? "http://localhost:4002";
-const tdlibRequestTimeoutMs = Number(process.env.TDLIB_REQUEST_TIMEOUT_MS ?? 30000);
+const tdlibRequestTimeoutMs = Number(process.env.TDLIB_REQUEST_TIMEOUT_MS ?? 60000);
 const openAiApiKey = process.env.OPENAI_API_KEY?.trim();
-const openAiModel = process.env.OPENAI_MODEL ?? "gpt-4o-mini";
+const openAiModel = process.env.OPENAI_MODEL ?? "gpt-5.2";
 
 const tdlibClient = new TdlibClient({ baseUrl: tdlibBaseUrl, requestTimeoutMs: tdlibRequestTimeoutMs });
 const analyzer = new OpenAiAnalyzer(openAiApiKey, openAiModel);
@@ -50,7 +53,7 @@ const sessions = new Map<string, SessionState>();
 const sessionTtlMs = Number(process.env.SESSION_TTL_MS ?? 7 * 24 * 60 * 60 * 1000);
 
 const analysisConfigSchema = z.object({
-  theme: z.enum(["Love", "Work", "Friendship", ""]).optional(),
+  theme: z.enum(["Love", "Work", "Friendship", "Gaslighting", ""]).optional(),
   behaviorPatterns: z.array(z.string()).default([]),
   focus: z.array(z.string()).default([]),
   goal: z.string().default(""),
@@ -76,6 +79,153 @@ const resumeSessionSchema = z.object({
   sessionId: z.string().min(8).max(128),
 });
 
+const colors = {
+  reset: "\x1b[0m",
+  yellow: "\x1b[33m",
+  green: "\x1b[32m",
+  red: "\x1b[31m",
+  cyan: "\x1b[36m",
+  gray: "\x1b[90m",
+} as const;
+
+function colorizeStatus(statusCode: number): string {
+  const value = String(statusCode);
+  if (isGcp) {
+    return value;
+  }
+  if (statusCode >= 500) {
+    return `${colors.red}${value}${colors.reset}`;
+  }
+  if (statusCode >= 400) {
+    return `${colors.yellow}${value}${colors.reset}`;
+  }
+  return `${colors.green}${value}${colors.reset}`;
+}
+
+function colorizeMethod(method: string): string {
+  return isGcp ? method : `${colors.yellow}${method}${colors.reset}`;
+}
+
+function colorizeUrl(url: string): string {
+  return isGcp ? url : `${colors.cyan}${url}${colors.reset}`;
+}
+
+function colorizeGray(value: string): string {
+  return isGcp ? value : `${colors.gray}${value}${colors.reset}`;
+}
+
+function extractErrorMessage(payload: unknown): string {
+  if (!payload) {
+    return "";
+  }
+  if (typeof payload === "string") {
+    try {
+      const parsed = JSON.parse(payload) as { error?: string; message?: string };
+      return parsed.error ?? parsed.message ?? payload;
+    } catch {
+      return payload;
+    }
+  }
+  if (Buffer.isBuffer(payload)) {
+    return extractErrorMessage(payload.toString("utf8"));
+  }
+  if (typeof payload === "object") {
+    const asRecord = payload as { error?: unknown; message?: unknown };
+    if (typeof asRecord.error === "string" && asRecord.error.length > 0) {
+      return asRecord.error;
+    }
+    if (typeof asRecord.message === "string" && asRecord.message.length > 0) {
+      return asRecord.message;
+    }
+  }
+  return "";
+}
+
+function normalizeResponseBody(payload: unknown): unknown {
+  if (Buffer.isBuffer(payload)) {
+    const asString = payload.toString("utf8");
+    try {
+      return JSON.parse(asString);
+    } catch {
+      return asString;
+    }
+  }
+  if (typeof payload === "string") {
+    try {
+      return JSON.parse(payload);
+    } catch {
+      return payload;
+    }
+  }
+  return payload;
+}
+
+function makeRequestLogger() {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const startedAt = Date.now();
+    let responsePayload: unknown;
+
+    const originalJson = res.json.bind(res);
+    res.json = ((body: unknown) => {
+      responsePayload = body;
+      return originalJson(body);
+    }) as Response["json"];
+
+    const originalSend = res.send.bind(res);
+    res.send = ((body: unknown) => {
+      if (responsePayload === undefined) {
+        responsePayload = body;
+      }
+      return originalSend(body as any);
+    }) as Response["send"];
+
+    res.on("finish", () => {
+      if (req.method === "OPTIONS") {
+        return;
+      }
+
+      const statusCode = res.statusCode;
+      const responseTime = Date.now() - startedAt;
+      const method = colorizeMethod(req.method);
+      const url = colorizeUrl(req.originalUrl || req.url);
+      const status = colorizeStatus(statusCode);
+      const timeStr = colorizeGray(`(${responseTime}ms)`);
+      const origin = (req.headers.origin as string | undefined) ?? (req.headers.referer as string | undefined) ?? "";
+      const originStr = origin ? ` ${colorizeGray(`← ${origin}`)}` : "";
+      const level = statusCode >= 500 ? "error" : statusCode >= 400 ? "warn" : "info";
+      const logger = level === "error" ? console.error : level === "warn" ? console.warn : console.info;
+
+      if (!extensiveLogging) {
+        if (statusCode >= 400) {
+          const errorMessage = extractErrorMessage(responsePayload);
+          const errorSuffix = errorMessage
+            ? ` - ${isGcp ? errorMessage : `${colors.red}${errorMessage}${colors.reset}`}`
+            : "";
+          logger(`${method} ${url} -> ${status}${errorSuffix} ${timeStr}${originStr}`);
+          return;
+        }
+        logger(`${method} ${url} -> ${status} ${timeStr}${originStr}`);
+        return;
+      }
+
+      logger({
+        msg: `${method} ${url} -> ${status} ${timeStr}${originStr}`,
+        request: {
+          headers: req.headers,
+          body: req.body,
+          query: req.query,
+          params: req.params,
+        },
+        response: normalizeResponseBody(responsePayload),
+      });
+    });
+
+    next();
+  };
+}
+
+app.use(makeRequestLogger());
+
 app.get("/health", (_req, res) => {
   res.json({
     ok: true,
@@ -84,7 +234,7 @@ app.get("/health", (_req, res) => {
   });
 });
 
-app.post("/api/sessions", async (_req, res) => {
+app.post("/api/sessions", async (req, res) => {
   try {
     const created = await tdlibClient.createSession();
     sessions.set(created.sessionId, {
@@ -95,7 +245,7 @@ app.post("/api/sessions", async (_req, res) => {
 
     res.status(201).json(created);
   } catch (error) {
-    handleError(res, error);
+    handleError(req, res, error);
   }
 });
 
@@ -110,7 +260,7 @@ app.post("/api/sessions/resume", async (req, res) => {
     });
     res.json(resumed);
   } catch (error) {
-    handleError(res, error);
+    handleError(req, res, error);
   }
 });
 
@@ -124,7 +274,7 @@ app.delete("/api/sessions/:sessionId", async (req, res) => {
     eventBridge.clearSession(sessionId);
     res.json({ ok: true });
   } catch (error) {
-    handleError(res, error);
+    handleError(req, res, error);
   }
 });
 
@@ -138,7 +288,7 @@ app.post("/api/sessions/:sessionId/clear", async (req, res) => {
     eventBridge.clearSession(sessionId);
     res.json({ ok: true });
   } catch (error) {
-    handleError(res, error);
+    handleError(req, res, error);
   }
 });
 
@@ -150,7 +300,7 @@ app.post("/api/sessions/:sessionId/auth/phone", async (req, res) => {
     const response = await tdlibClient.submitPhone(sessionId, payload.phoneNumber);
     res.json(response);
   } catch (error) {
-    handleError(res, error);
+    handleError(req, res, error);
   }
 });
 
@@ -161,7 +311,7 @@ app.post("/api/sessions/:sessionId/auth/qr", async (req, res) => {
     const response = await tdlibClient.startQrAuthentication(sessionId);
     res.json(response);
   } catch (error) {
-    handleError(res, error);
+    handleError(req, res, error);
   }
 });
 
@@ -173,7 +323,7 @@ app.post("/api/sessions/:sessionId/auth/code", async (req, res) => {
     const response = await tdlibClient.submitCode(sessionId, payload.code);
     res.json(response);
   } catch (error) {
-    handleError(res, error);
+    handleError(req, res, error);
   }
 });
 
@@ -185,7 +335,7 @@ app.post("/api/sessions/:sessionId/auth/password", async (req, res) => {
     const response = await tdlibClient.submitPassword(sessionId, payload.password);
     res.json(response);
   } catch (error) {
-    handleError(res, error);
+    handleError(req, res, error);
   }
 });
 
@@ -203,7 +353,7 @@ app.get("/api/sessions/:sessionId/chats", async (req, res) => {
     const chatsToReturn = privateChats.length > 0 ? privateChats : fallbackChats;
     res.json({ chats: chatsToReturn.slice(0, limit) });
   } catch (error) {
-    handleError(res, error);
+    handleError(req, res, error);
   }
 });
 
@@ -217,7 +367,7 @@ app.get("/api/sessions/:sessionId/chats/:chatId/messages", async (req, res) => {
     const messages = await tdlibClient.getChatHistory(sessionId, chatId, limit, fromMessageId);
     res.json({ messages });
   } catch (error) {
-    handleError(res, error);
+    handleError(req, res, error);
   }
 });
 
@@ -236,7 +386,7 @@ app.get("/api/sessions/:sessionId/chats/:chatId/messages/range", async (req, res
     const messages = await tdlibClient.getChatHistoryByDate(sessionId, chatId, startTs, endTs);
     res.json({ messages });
   } catch (error) {
-    handleError(res, error);
+    handleError(req, res, error);
   }
 });
 
@@ -272,7 +422,7 @@ app.post("/api/sessions/:sessionId/analysis", async (req, res) => {
       messageCount: messages.length,
     });
   } catch (error) {
-    handleError(res, error);
+    handleError(req, res, error);
   }
 });
 
@@ -309,6 +459,7 @@ wss.on("connection", (socket, req) => {
 server.listen(apiPort, () => {
   console.log(`api service listening on :${apiPort}`);
   console.log(`openai configured: ${openAiApiKey ? "yes" : "no"} (model=${openAiModel})`);
+  console.log(`request logging: ${extensiveLogging ? "EXTENSIVE" : "BASIC"}${isGcp ? " (gcp mode)" : ""}`);
 });
 
 setInterval(() => {
@@ -404,7 +555,7 @@ function touchSession(sessionId: string): void {
   session.updatedAt = Date.now();
 }
 
-function handleError(res: express.Response, error: unknown): void {
+function handleError(req: Request, res: Response, error: unknown): void {
   const message = error instanceof Error ? error.message : "Unexpected error";
   let status = 400;
   if (message.includes("Unknown session")) {
@@ -412,6 +563,29 @@ function handleError(res: express.Response, error: unknown): void {
   } else if (message.toLowerCase().includes("too many")) {
     status = 429;
   }
+
+  const stack = error instanceof Error ? error.stack : undefined;
+  const code =
+    typeof error === "object" && error !== null && "code" in error
+      ? String((error as { code?: unknown }).code ?? "")
+      : undefined;
+  const logLevel = status >= 500 ? "error" : status >= 400 ? "warn" : "info";
+  const logger = logLevel === "error" ? console.error : logLevel === "warn" ? console.warn : console.info;
+  logger({
+    msg: `${req.method} ${req.originalUrl || req.url} -> ${status} ERROR`,
+    error: {
+      message,
+      stack,
+      statusCode: status,
+      code,
+    },
+    request: {
+      headers: req.headers,
+      body: req.body,
+      query: req.query,
+      params: req.params,
+    },
+  });
 
   res.status(status).json({ error: message });
 }
