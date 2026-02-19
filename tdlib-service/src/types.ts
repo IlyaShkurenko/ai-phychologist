@@ -30,6 +30,7 @@ export interface ChatSummary {
   lastMessageTs?: number;
   isPrivate?: boolean;
   chatKind?: ChatKind;
+  memberCount?: number;
 }
 
 export interface ChatMessage {

@@ -115,9 +115,10 @@ action_type выбери строго из списка:
 export const PROMPT_STEP2 = `Ты — модуль анализа реакции партнёра на конкретный якорный факт.
 
 Тебе дано:
-1) anchor_line (одна строка якорного сообщения)
-2) following_transcript (следующие 15 строк диалога после якоря, оба участника)
+1) previous_transcript (20 строк диалога ДО якорного сообщения, оба участника)
+2) anchor_line (одна строка якорного сообщения)
 3) anchor_meta
+4) following_transcript (следующие 15 строк диалога после якоря, оба участника)
 Формат строк: msg_id=<id> | <speaker>: <text> (<ts>) | reply_to=<id> -> <reply_text>
 
 Ты не ставишь диагнозы и не оцениваешь правоту сторон.
@@ -394,11 +395,12 @@ export class GaslightingPipeline {
           return null;
         }
 
+        const previousMessages = collectPreviousMessages(conversation, anchorMessage.index, 20);
         const followingMessages = collectFollowingMessages(conversation, anchorMessage.index, 15);
         const anchorLine = formatTranscriptLine(anchorMessage);
         const step2 =
           followingMessages.length > 0
-            ? await this.classifyStep2(anchorLine, anchor, followingMessages, locale)
+            ? await this.classifyStep2(anchorLine, anchor, previousMessages, followingMessages, locale)
             : this.emptyStep2(locale);
 
         const gaslighting = step2.fact_denial && (step2.perception_attack || step2.reality_avoidance);
@@ -409,6 +411,7 @@ export class GaslightingPipeline {
           anchor_msg_id: anchor.msg_id,
           anchor_ts: anchorMessage.ts,
           anchor_speaker: anchor.speaker,
+          previous_message_count: previousMessages.length,
           following_message_count: followingMessages.length,
           gaslighting,
           step2,
@@ -448,9 +451,12 @@ export class GaslightingPipeline {
       verificationResults.map((item) => [item.anchor_msg_id, item] as const),
     );
 
+    const path = join(STEP2_DEBUG_DIR, `step3_full.json`);
+    writeFileSync(path, JSON.stringify(verificationResults, null, 2));
+    
     for (const item of successfulResults) {
       const verification = verificationByAnchorMsgId.get(item.episode.anchor.msg_id);
-      writeJsonDebug(`step3_${item.stepIndex}.json`, {
+      writeJsonDebug(`step3.json`, {
         step_index: item.stepIndex,
         anchor_msg_id: item.episode.anchor.msg_id,
         anchor_ts: item.anchorMessage.ts,
@@ -534,10 +540,11 @@ export class GaslightingPipeline {
   private async classifyStep2(
     anchorLine: string,
     anchor: GaslightingAnchor,
+    previousMessages: PipelineMessage[],
     followingMessages: PipelineMessage[],
     locale: Locale,
   ): Promise<GaslightingStep2> {
-    const step2Input = buildStep2InputMarkdown(locale, anchorLine, anchor, followingMessages);
+    const step2Input = buildStep2InputMarkdown(locale, anchorLine, anchor, previousMessages, followingMessages);
     const output = await this.callStructured(
       step2ResponseSchema,
       STEP2_JSON_SCHEMA,
@@ -847,11 +854,16 @@ function buildStep2InputMarkdown(
   locale: Locale,
   anchorLine: string,
   anchor: GaslightingAnchor,
+  previousMessages: PipelineMessage[],
   followingMessages: PipelineMessage[],
 ): string {
   return [
     `language: ${locale === "ru" ? "Russian" : "English"}`,
     "line_format: msg_id=<id> | <speaker>: <text> (<ts>) | reply_to=<id> -> <reply_text>",
+    "### previous_transcript",
+    "```text",
+    formatTranscript(previousMessages),
+    "```",
     "### anchor_line",
     "```text",
     anchorLine,
@@ -928,6 +940,18 @@ function collectFollowingMessages(
     }
   }
   return following;
+}
+
+function collectPreviousMessages(
+  messages: PipelineMessage[],
+  anchorIndex: number,
+  limit: number,
+): PipelineMessage[] {
+  const start = Math.max(0, anchorIndex - limit);
+  if (start >= anchorIndex) {
+    return [];
+  }
+  return messages.slice(start, anchorIndex);
 }
 
 function buildAggregates(episodes: GaslightingEpisode[]): GaslightingAggregates {

@@ -1,0 +1,8 @@
+schema: gaslighting_step2_reaction
+log_id: 15
+
+=== MODEL OUTPUT ===
+{
+  "content": "{\"reaction_type\":\"reality_avoidance_only\",\"normal_engagement\":false,\"non_engagement\":true,\"fact_denial\":false,\"perception_attack\":false,\"reality_avoidance\":true,\"notes\":\"На якорный факт «Ты не замужем» партнёр не отвечает по существу (не подтверждает/не уточняет/не опровергает). Вместо проверки факта задаёт встречные вопросы и переводит разговор в другое русло («Ну а что тебе еще надо?», «Так спросил», «И все?»), далее уходит в обсуждение других тем. Прямого отрицания факта и атак на восприятие автора нет.\"}",
+  "finish_reason": "stop"
+}

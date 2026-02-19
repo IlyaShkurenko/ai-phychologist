@@ -11,6 +11,7 @@ interface AdapterFactoryConfig {
   apiHash?: string;
   tdlibPath?: string;
   tdlibDataDir: string;
+  maxGroupMembers?: number;
 }
 
 export function createAdapter(config: AdapterFactoryConfig): {
@@ -31,6 +32,7 @@ export function createAdapter(config: AdapterFactoryConfig): {
         apiHash: config.apiHash,
         tdlibPath: config.tdlibPath,
         dataDir: path.resolve(config.tdlibDataDir),
+        maxGroupMembers: config.maxGroupMembers,
       }),
     };
   }

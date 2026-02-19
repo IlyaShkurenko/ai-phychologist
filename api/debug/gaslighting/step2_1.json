@@ -1,0 +1,18 @@
+{
+  "status": "ok",
+  "step_index": 1,
+  "anchor_msg_id": "1073293033472",
+  "anchor_ts": "2026-02-17 21:42:01",
+  "anchor_speaker": "self",
+  "following_message_count": 15,
+  "gaslighting": false,
+  "step2": {
+    "reaction_type": "non_engagement",
+    "normal_engagement": false,
+    "non_engagement": true,
+    "fact_denial": false,
+    "perception_attack": false,
+    "reality_avoidance": false,
+    "notes": "Якорный факт: «Писала дня 3 назад)». В следующих сообщениях partner не подтверждает и не опровергает, что писала 3 дня назад, и не уточняет детали. Вместо ответа по факту идёт смена темы/рассуждения, затем короткие реплики «Ну скажи / Не ищи / Давай» и смех, без проверки или обсуждения самого факта. Прямого отрицания факта, атаки на восприятие или явного отказа обсуждать факт нет — просто отсутствует ответ по существу."
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "status": "ok",
+  "step_index": 7,
+  "anchor_msg_id": "1073462902784",
+  "anchor_ts": "2026-02-17 22:03:05",
+  "anchor_speaker": "self",
+  "following_message_count": 15,
+  "gaslighting": false,
+  "step2": {
+    "reaction_type": "non_engagement",
+    "normal_engagement": false,
+    "non_engagement": true,
+    "fact_denial": false,
+    "perception_attack": false,
+    "reality_avoidance": false,
+    "notes": "На якорный факт «ты сама меня исправляла» партнёр прямо не отвечает: не подтверждает, не опровергает и не уточняет, было ли это «исправление». Вместо этого переводит разговор на общие рассуждения о стиле поведения/«давить», роли мужчины, целях и влиянии, не проверяя исходное утверждение."
+  }
+}

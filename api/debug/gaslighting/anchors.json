@@ -1,0 +1,110 @@
+{
+  "anchor_source": "partner_only",
+  "count": 13,
+  "anchors": [
+    {
+      "msg_id": "1073293033472",
+      "speaker": "self",
+      "fact_span": "Писала дня 3 назад)",
+      "anchor_event": "Партнёр писала (сообщение) примерно 3 дня назад.",
+      "action_type": "said_phrase",
+      "confidence": 0.62
+    },
+    {
+      "msg_id": "1073305616384",
+      "speaker": "self",
+      "fact_span": "Там где ты написала - жалко вас мужиков",
+      "anchor_event": "Партнёр написала фразу «жалко вас мужиков».",
+      "action_type": "said_phrase",
+      "confidence": 0.74
+    },
+    {
+      "msg_id": "1073306664960",
+      "speaker": "self",
+      "fact_span": "Или тяжко вам",
+      "anchor_event": "Партнёр написала фразу «тяжко вам».",
+      "action_type": "said_phrase",
+      "confidence": 0.66
+    },
+    {
+      "msg_id": "1073310859264",
+      "speaker": "self",
+      "fact_span": "Тяжело вам мужчинам",
+      "anchor_event": "Партнёр написала фразу «Тяжело вам мужчинам».",
+      "action_type": "said_phrase",
+      "confidence": 0.6
+    },
+    {
+      "msg_id": "1073324490752",
+      "speaker": "self",
+      "fact_span": "Сам причем написал",
+      "anchor_event": "Автор утверждает, что он сам написал партнёру первым.",
+      "action_type": "other_fact",
+      "confidence": 0.55
+    },
+    {
+      "msg_id": "1073429348352",
+      "speaker": "self",
+      "fact_span": "Я же сходу оценил твои навыки после первого созвона",
+      "anchor_event": "После первого созвона автор оценил навыки партнёра.",
+      "action_type": "other_fact",
+      "confidence": 0.52
+    },
+    {
+      "msg_id": "1073462902784",
+      "speaker": "self",
+      "fact_span": "Так ты сама меня исправляла",
+      "anchor_event": "Партнёр ранее «исправляла» автора (делала замечания/корректировала его поведение/манеру).",
+      "action_type": "other_fact",
+      "confidence": 0.62
+    },
+    {
+      "msg_id": "1073499602944",
+      "speaker": "self",
+      "fact_span": "мне б хватило «гений» с твоей стороны",
+      "anchor_event": "Партнёр называла автора «гений».",
+      "action_type": "said_phrase",
+      "confidence": 0.74
+    },
+    {
+      "msg_id": "1073562517504",
+      "speaker": "self",
+      "fact_span": "ты говорила что запишешь что-то касательно него",
+      "anchor_event": "Партнёр говорила, что запишет что-то, связанное с тем сообщением.",
+      "action_type": "promise",
+      "confidence": 0.6
+    },
+    {
+      "msg_id": "1073634869248",
+      "speaker": "self",
+      "fact_span": "я думал раньше спросит про то говоришь ли ты сама с собой",
+      "anchor_event": "Партнёр раньше не спросил(а) про то, говорит ли он(а) сам(а) с собой.",
+      "action_type": "other_fact",
+      "confidence": 0.42
+    },
+    {
+      "msg_id": "1073804738560",
+      "speaker": "self",
+      "fact_span": "Ты не замужем",
+      "anchor_event": "Партнёр не состоит в браке.",
+      "action_type": "other_fact",
+      "confidence": 0.55
+    },
+    {
+      "msg_id": "1073815224320",
+      "speaker": "self",
+      "fact_span": "А зачем ты писала?)",
+      "anchor_event": "Партнёр писала (написала сообщение) автору до этого момента.",
+      "action_type": "other_fact",
+      "confidence": 0.62
+    },
+    {
+      "msg_id": "1073911693312",
+      "speaker": "self",
+      "fact_span": "Наебала меня да?)",
+      "anchor_event": "Партнёр обманула автора (утверждение/вопрос о факте обмана).",
+      "action_type": "other_fact",
+      "confidence": 0.55
+    }
+  ]
+}

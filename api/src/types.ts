@@ -8,6 +8,8 @@ export type AuthState =
 
 export type Locale = "ru" | "en";
 
+export type ChatKind = "private" | "group" | "channel" | "unknown";
+
 export interface ChatSummary {
   id: number;
   title: string;
@@ -15,6 +17,8 @@ export interface ChatSummary {
   lastMessageSnippet?: string;
   lastMessageTs?: number;
   isPrivate?: boolean;
+  chatKind?: ChatKind;
+  memberCount?: number;
 }
 
 export interface ChatMessage {

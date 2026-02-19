@@ -24,6 +24,7 @@ interface TdlibSession {
   client: RawTdClient;
   myUserId?: number;
   chatsCache: Map<number, ChatSummary>;
+  groupMemberCountCache: Map<string, number>;
 }
 
 type TdChatListType = "chatListMain" | "chatListArchive";
@@ -33,6 +34,7 @@ interface TdlibRuntimeConfig {
   apiHash: string;
   dataDir: string;
   tdlibPath?: string;
+  maxGroupMembers?: number;
 }
 
 export class TdlibTelegramAdapter implements TelegramAdapter {
@@ -57,6 +59,7 @@ export class TdlibTelegramAdapter implements TelegramAdapter {
       },
       client,
       chatsCache: new Map(),
+      groupMemberCountCache: new Map(),
     };
     this.sessions.set(sessionId, session);
 
@@ -155,9 +158,9 @@ export class TdlibTelegramAdapter implements TelegramAdapter {
   async listChats(sessionId: string, limit = 100): Promise<ChatSummary[]> {
     const session = this.mustGetSession(sessionId);
     const requestedLimit = Math.min(Math.max(limit * 3, 200), 1000);
-    const cachedChatsAtStart = [...session.chatsCache.values()].sort(
-      (a, b) => (b.lastMessageTs ?? 0) - (a.lastMessageTs ?? 0),
-    );
+    const cachedChatsAtStart = [...session.chatsCache.values()]
+      .filter((chat) => this.isChatAllowed(chat))
+      .sort((a, b) => (b.lastMessageTs ?? 0) - (a.lastMessageTs ?? 0));
     const allChatIds = new Set<number>();
     const startedAt = Date.now();
     for (const listType of ["chatListMain", "chatListArchive"] as TdChatListType[]) {
@@ -192,7 +195,7 @@ export class TdlibTelegramAdapter implements TelegramAdapter {
 
     const chats: ChatSummary[] = [];
     const chunkSize = 20;
-    const privateTarget = Math.max(limit * 2, limit);
+    const target = Math.max(limit * 2, limit);
 
     for (let index = 0; index < chatIds.length; index += chunkSize) {
       if (Date.now() - startedAt > 20_000) {
@@ -210,7 +213,11 @@ export class TdlibTelegramAdapter implements TelegramAdapter {
               },
               3_000,
             );
-            return this.mapChat(chat);
+            const mapped = this.mapChat(chat);
+            if (mapped.chatKind === "group") {
+              mapped.memberCount = await this.resolveGroupMemberCount(session, chat);
+            }
+            return mapped;
           } catch {
             return null;
           }
@@ -218,19 +225,23 @@ export class TdlibTelegramAdapter implements TelegramAdapter {
       );
 
       for (const mapped of mappedChunk) {
-        if (!mapped || mapped.isPrivate === false) {
+        if (!mapped || !this.isChatAllowed(mapped)) {
+          if (mapped) {
+            session.chatsCache.delete(mapped.id);
+          }
           continue;
         }
         session.chatsCache.set(mapped.id, mapped);
         chats.push(mapped);
       }
 
-      if (chats.length >= privateTarget) {
+      if (chats.length >= target) {
         break;
       }
     }
 
     const fromCache = [...session.chatsCache.values()]
+      .filter((chat) => this.isChatAllowed(chat))
       .sort((a, b) => (b.lastMessageTs ?? 0) - (a.lastMessageTs ?? 0))
       .slice(0, limit);
     const sorted =
@@ -505,13 +516,16 @@ export class TdlibTelegramAdapter implements TelegramAdapter {
 
   private mapChat(chat: any): ChatSummary {
     const lastMessageTs = Number(chat?.last_message?.date ?? 0) * 1000;
+    const chatKind = this.getChatKind(chat);
     return {
       id: Number(chat?.id ?? 0),
       title: String(chat?.title ?? "Unknown chat"),
       unreadCount: Number(chat?.unread_count ?? 0),
       lastMessageSnippet: this.extractMessageText(chat?.last_message),
       lastMessageTs: Number.isFinite(lastMessageTs) ? lastMessageTs : undefined,
-      isPrivate: this.isPrivateChat(chat),
+      isPrivate: chatKind === "private",
+      chatKind,
+      memberCount: undefined,
     };
   }
 
@@ -646,19 +660,25 @@ export class TdlibTelegramAdapter implements TelegramAdapter {
     return `[${String(contentType ?? "Unsupported message")}]`;
   }
 
-  private isPrivateChat(chat: any): boolean | undefined {
+  private getChatKind(chat: any): "private" | "group" | "channel" | "unknown" {
     const chatType = chat?.type;
     const typeName = this.readTdType(chatType);
     const normalizedType = String(typeName ?? "").toLowerCase();
     if (normalizedType.includes("private") || normalizedType.includes("secret")) {
-      return true;
+      return "private";
     }
-    if (
-      normalizedType.includes("basicgroup") ||
-      normalizedType.includes("supergroup") ||
-      normalizedType.includes("channel")
-    ) {
-      return false;
+    if (normalizedType.includes("basicgroup")) {
+      return "group";
+    }
+    if (normalizedType.includes("supergroup")) {
+      const isChannel =
+        chatType && typeof chatType === "object"
+          ? Boolean((chatType as { is_channel?: unknown; isChannel?: unknown }).is_channel ?? (chatType as { isChannel?: unknown }).isChannel)
+          : false;
+      return isChannel ? "channel" : "group";
+    }
+    if (normalizedType.includes("channel")) {
+      return "channel";
     }
 
     if (chatType && typeof chatType === "object") {
@@ -668,21 +688,129 @@ export class TdlibTelegramAdapter implements TelegramAdapter {
         this.hasPositiveId(chatType.secret_chat_id) ||
         this.hasPositiveId(chatType.secretChatId)
       ) {
-        return true;
+        return "private";
       }
       if (
         this.hasPositiveId(chatType.basic_group_id) ||
         this.hasPositiveId(chatType.basicGroupId) ||
         this.hasPositiveId(chatType.supergroup_id) ||
-        this.hasPositiveId(chatType.supergroupId) ||
+        this.hasPositiveId(chatType.supergroupId)
+      ) {
+        const isChannel = Boolean(chatType.is_channel ?? chatType.isChannel);
+        return isChannel ? "channel" : "group";
+      }
+      if (
         this.hasPositiveId(chatType.channel_id) ||
         this.hasPositiveId(chatType.channelId)
       ) {
-        return false;
+        return "channel";
       }
     }
 
-    return undefined;
+    return "unknown";
+  }
+
+  private isChatAllowed(chat: ChatSummary): boolean {
+    if (chat.chatKind === "private") {
+      return true;
+    }
+    if (chat.chatKind !== "group") {
+      return false;
+    }
+
+    const maxGroupMembers = this.getMaxGroupMembers();
+    if (!maxGroupMembers) {
+      return true;
+    }
+
+    const count = chat.memberCount;
+    if (typeof count !== "number" || !Number.isFinite(count)) {
+      return false;
+    }
+    return count < maxGroupMembers;
+  }
+
+  private getMaxGroupMembers(): number | undefined {
+    const value = this.config.maxGroupMembers;
+    if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+      return undefined;
+    }
+    return Math.floor(value);
+  }
+
+  private async resolveGroupMemberCount(session: TdlibSession, chat: any): Promise<number | undefined> {
+    const chatType = chat?.type;
+    const basicGroupId = this.toPositiveInt(chatType?.basic_group_id ?? chatType?.basicGroupId);
+    if (basicGroupId) {
+      const key = `basic:${basicGroupId}`;
+      const cached = session.groupMemberCountCache.get(key);
+      if (typeof cached === "number" && Number.isFinite(cached)) {
+        return cached;
+      }
+
+      let count = this.toPositiveInt(chat?.member_count ?? chat?.memberCount);
+      if (!count) {
+        try {
+          const basicGroup = await this.invokeWithTimeout<any>(
+            session,
+            {
+              _: "getBasicGroup",
+              basic_group_id: basicGroupId,
+            },
+            2_500,
+          );
+          count = this.toPositiveInt(basicGroup?.member_count ?? basicGroup?.memberCount);
+        } catch {
+          return undefined;
+        }
+      }
+
+      if (count) {
+        session.groupMemberCountCache.set(key, count);
+      }
+      return count;
+    }
+
+    const supergroupId = this.toPositiveInt(chatType?.supergroup_id ?? chatType?.supergroupId);
+    if (supergroupId) {
+      const key = `super:${supergroupId}`;
+      const cached = session.groupMemberCountCache.get(key);
+      if (typeof cached === "number" && Number.isFinite(cached)) {
+        return cached;
+      }
+
+      let count = this.toPositiveInt(chat?.member_count ?? chat?.memberCount);
+      if (!count) {
+        try {
+          const supergroup = await this.invokeWithTimeout<any>(
+            session,
+            {
+              _: "getSupergroup",
+              supergroup_id: supergroupId,
+            },
+            2_500,
+          );
+          count = this.toPositiveInt(supergroup?.member_count ?? supergroup?.memberCount);
+        } catch {
+          return undefined;
+        }
+      }
+
+      if (count) {
+        session.groupMemberCountCache.set(key, count);
+      }
+      return count;
+    }
+
+    return this.toPositiveInt(chat?.member_count ?? chat?.memberCount);
+  }
+
+  private toPositiveInt(value: unknown): number | undefined {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      return undefined;
+    }
+    return Math.floor(parsed);
   }
 
   private hasPositiveId(value: unknown): boolean {

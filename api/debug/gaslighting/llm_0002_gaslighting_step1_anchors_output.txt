@@ -1,0 +1,8 @@
+schema: gaslighting_step1_anchors
+log_id: 2
+
+=== MODEL OUTPUT ===
+{
+  "content": "{\"anchors\":[{\"msg_id\":\"1073462902784\",\"fact_span\":\"Так ты сама меня исправляла\",\"anchor_event\":\"Партнёр ранее «исправляла» автора (делала замечания/корректировала его поведение/манеру).\",\"action_type\":\"other_fact\",\"confidence\":0.62},{\"msg_id\":\"1073499602944\",\"fact_span\":\"мне б хватило «гений» с твоей стороны\",\"anchor_event\":\"Партнёр называла автора «гений».\",\"action_type\":\"said_phrase\",\"confidence\":0.74},{\"msg_id\":\"1073562517504\",\"fact_span\":\"ты говорила что запишешь что-то касательно него\",\"anchor_event\":\"Партнёр говорила, что запишет что-то, связанное с тем сообщением.\",\"action_type\":\"promise\",\"confidence\":0.6}]}",
+  "finish_reason": "stop"
+}

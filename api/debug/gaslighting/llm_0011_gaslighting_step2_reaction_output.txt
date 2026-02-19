@@ -1,0 +1,8 @@
+schema: gaslighting_step2_reaction
+log_id: 11
+
+=== MODEL OUTPUT ===
+{
+  "content": "{\"reaction_type\":\"non_engagement\",\"normal_engagement\":false,\"non_engagement\":true,\"fact_denial\":false,\"perception_attack\":false,\"reality_avoidance\":false,\"notes\":\"На якорный факт «ты сама меня исправляла» партнёр прямо не отвечает: не подтверждает, не опровергает и не уточняет, было ли это «исправление». Вместо этого переводит разговор на общие рассуждения о стиле поведения/«давить», роли мужчины, целях и влиянии, не проверяя исходное утверждение.\"}",
+  "finish_reason": "stop"
+}

@@ -33,6 +33,7 @@ app.use(express.json({ limit: "1mb" }));
 const apiPort = Number(process.env.API_PORT ?? 4001);
 const isGcp = Boolean(process.env.GOOGLE_CLOUD_PROJECT);
 const extensiveLogging = process.env.EXTENSIVE_LOGGING === "true";
+const maxGroupMembers = Number(process.env.TDLIB_MAX_GROUP_MEMBERS ?? 20);
 const tdlibBaseUrl = process.env.TDLIB_BASE_URL ?? "http://localhost:4002";
 const tdlibRequestTimeoutMs = Number(process.env.TDLIB_REQUEST_TIMEOUT_MS ?? 60000);
 const openAiApiKey = process.env.OPENAI_API_KEY?.trim();
@@ -345,13 +346,19 @@ app.get("/api/sessions/:sessionId/chats", async (req, res) => {
     touchSession(sessionId);
     const limit = Number(req.query.limit ?? 100);
     const listed = await tdlibClient.listChats(sessionId, limit);
-    const privateChats = listed
-      .filter((chat) => chat.isPrivate !== false)
+    const allowedChats = listed
+      .filter((chat) => {
+        if (chat.chatKind === "private") {
+          return true;
+        }
+        if (chat.chatKind !== "group") {
+          return false;
+        }
+        return typeof chat.memberCount === "number" && Number.isFinite(chat.memberCount) && chat.memberCount < maxGroupMembers;
+      })
       .sort((a, b) => (b.lastMessageTs ?? 0) - (a.lastMessageTs ?? 0));
 
-    const fallbackChats = listed.sort((a, b) => (b.lastMessageTs ?? 0) - (a.lastMessageTs ?? 0));
-    const chatsToReturn = privateChats.length > 0 ? privateChats : fallbackChats;
-    res.json({ chats: chatsToReturn.slice(0, limit) });
+    res.json({ chats: allowedChats.slice(0, limit) });
   } catch (error) {
     handleError(req, res, error);
   }

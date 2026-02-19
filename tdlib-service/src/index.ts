@@ -29,6 +29,9 @@ const apiId = process.env.TDLIB_API_ID ? Number(process.env.TDLIB_API_ID) : unde
 const apiHash = process.env.TDLIB_API_HASH;
 const tdlibPath = process.env.TDLIB_LIBRARY_PATH;
 const tdlibDataDir = process.env.TDLIB_DATA_DIR ?? "./tdlib-data";
+const maxGroupMembersRaw = Number(process.env.TDLIB_MAX_GROUP_MEMBERS ?? 20);
+const maxGroupMembers =
+  Number.isFinite(maxGroupMembersRaw) && maxGroupMembersRaw > 0 ? Math.floor(maxGroupMembersRaw) : 20;
 
 const { adapter } = createAdapter({
   mode,
@@ -36,6 +39,7 @@ const { adapter } = createAdapter({
   apiHash,
   tdlibPath,
   tdlibDataDir,
+  maxGroupMembers,
 });
 
 const nanoid = customAlphabet("1234567890abcdefghijklmnopqrstuvwxyz", 16);

@@ -1,0 +1,18 @@
+{
+  "status": "ok",
+  "step_index": 5,
+  "anchor_msg_id": "1073324490752",
+  "anchor_ts": "2026-02-17 21:46:29",
+  "anchor_speaker": "self",
+  "following_message_count": 15,
+  "gaslighting": false,
+  "step2": {
+    "reaction_type": "reality_avoidance_only",
+    "normal_engagement": false,
+    "non_engagement": true,
+    "fact_denial": false,
+    "perception_attack": false,
+    "reality_avoidance": true,
+    "notes": "Якорный факт: «Сам причем написал» (утверждение, что автор написал первым). В последующих репликах partner не подтверждает и не опровергает, не уточняет детали и не возвращается к проверке этого факта. Вместо этого переводит разговор на «модель взаимодействия», «как решаю конфликты», предлагает автору «найти другую модель», задаёт вопросы про цели — то есть уходит от обсуждения конкретного события/факта."
+  }
+}

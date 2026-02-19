@@ -1,0 +1,8 @@
+schema: gaslighting_step1_anchors
+log_id: 4
+
+=== MODEL OUTPUT ===
+{
+  "content": "{\"anchors\":[{\"msg_id\":\"1073815224320\",\"fact_span\":\"А зачем ты писала?)\",\"anchor_event\":\"Партнёр писала (написала сообщение) автору до этого момента.\",\"action_type\":\"other_fact\",\"confidence\":0.62},{\"msg_id\":\"1073911693312\",\"fact_span\":\"Наебала меня да?)\",\"anchor_event\":\"Партнёр обманула автора (утверждение/вопрос о факте обмана).\",\"action_type\":\"other_fact\",\"confidence\":0.55}]}",
+  "finish_reason": "stop"
+}

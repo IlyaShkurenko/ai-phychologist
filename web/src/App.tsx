@@ -61,10 +61,28 @@ interface DateRangeValue {
   to?: Date;
 }
 
+function isAllowedChat(chat: ChatSummary): boolean {
+  const maxGroupMembers = 20;
+  if (chat.chatKind) {
+    if (chat.chatKind === "private") {
+      return true;
+    }
+    if (chat.chatKind !== "group") {
+      return false;
+    }
+    return (
+      typeof chat.memberCount === "number" &&
+      Number.isFinite(chat.memberCount) &&
+      chat.memberCount < maxGroupMembers
+    );
+  }
+  return chat.isPrivate === true;
+}
+
 function sortChatsByRecent(chats: ChatSummary[]): ChatSummary[] {
-  const sorted = [...chats].sort((a, b) => (b.lastMessageTs ?? 0) - (a.lastMessageTs ?? 0));
-  const privateFirst = sorted.filter((chat) => chat.isPrivate !== false);
-  return privateFirst.length > 0 ? privateFirst : sorted;
+  return [...chats]
+    .filter((chat) => isAllowedChat(chat))
+    .sort((a, b) => (b.lastMessageTs ?? 0) - (a.lastMessageTs ?? 0));
 }
 
 function mergeChatSnapshots(current: ChatSummary[], incoming: ChatSummary[]): ChatSummary[] {
@@ -160,6 +178,49 @@ export default function App(): JSX.Element {
   const pendingAnalysisRef = useRef<PendingAnalysis | null>(null);
   const activeChatLoadRef = useRef(0);
   const restoreStartedRef = useRef(false);
+  const chatsLoadingRef = useRef(false);
+  const chatsFetchInFlightRef = useRef(false);
+  const chatsCountRef = useRef(0);
+  const chatsSettleTimerRef = useRef<number | null>(null);
+
+  const clearChatsSettleTimer = useCallback(() => {
+    if (chatsSettleTimerRef.current !== null) {
+      window.clearTimeout(chatsSettleTimerRef.current);
+      chatsSettleTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleChatsLoadingSettle = useCallback(() => {
+    if (!chatsLoadingRef.current) {
+      return;
+    }
+    if (chatsFetchInFlightRef.current) {
+      return;
+    }
+    clearChatsSettleTimer();
+    chatsSettleTimerRef.current = window.setTimeout(() => {
+      setIsChatsLoading(false);
+      chatsLoadingRef.current = false;
+      chatsSettleTimerRef.current = null;
+    }, 2200);
+  }, [clearChatsSettleTimer]);
+
+  useEffect(() => {
+    chatsLoadingRef.current = isChatsLoading;
+    if (!isChatsLoading) {
+      clearChatsSettleTimer();
+    }
+  }, [clearChatsSettleTimer, isChatsLoading]);
+
+  useEffect(() => {
+    chatsCountRef.current = chats.length;
+  }, [chats]);
+
+  useEffect(() => {
+    return () => {
+      clearChatsSettleTimer();
+    };
+  }, [clearChatsSettleTimer]);
 
   useEffect(() => {
     localStorage.setItem(LOCALE_STORAGE_KEY, locale);
@@ -190,7 +251,16 @@ export default function App(): JSX.Element {
         const payload = event.payload as { chats?: ChatSummary[] };
         if (payload.chats) {
           const sortedIncoming = sortChatsByRecent(payload.chats);
+          if (
+            !chatsFetchInFlightRef.current &&
+            !chatsLoadingRef.current &&
+            sortedIncoming.length > chatsCountRef.current
+          ) {
+            setIsChatsLoading(true);
+            chatsLoadingRef.current = true;
+          }
           setChats((current) => mergeChatSnapshots(current, sortedIncoming));
+          scheduleChatsLoadingSettle();
         }
         return;
       }
@@ -214,7 +284,7 @@ export default function App(): JSX.Element {
         setStatusMessage(payload.message ?? t(locale, "status.telegramError"));
       }
     },
-    [locale, selectedChatId],
+    [locale, scheduleChatsLoadingSettle, selectedChatId],
   );
 
   const handleSocketError = useCallback(
@@ -269,7 +339,10 @@ export default function App(): JSX.Element {
     }
 
     let cancelled = false;
+    let receivedChatsInFetch = false;
     setIsChatsLoading(true);
+    chatsLoadingRef.current = true;
+    chatsFetchInFlightRef.current = true;
     void (async () => {
       try {
         let attempts = 0;
@@ -296,20 +369,34 @@ export default function App(): JSX.Element {
         if (!cancelled) {
           const sortedIncoming = sortChatsByRecent(nextChats);
           setChats((current) => mergeChatSnapshots(current, sortedIncoming));
+          if (sortedIncoming.length > 0) {
+            receivedChatsInFetch = true;
+            scheduleChatsLoadingSettle();
+          }
         }
       } catch (error) {
         if (!cancelled) {
           setStatusMessage(error instanceof Error ? error.message : t(locale, "status.failedLoadChats"));
+          setIsChatsLoading(false);
+          chatsLoadingRef.current = false;
+          chatsFetchInFlightRef.current = false;
         }
       } finally {
         if (!cancelled) {
-          setIsChatsLoading(false);
+          chatsFetchInFlightRef.current = false;
+          if (!receivedChatsInFetch) {
+            setIsChatsLoading(false);
+            chatsLoadingRef.current = false;
+          } else {
+            scheduleChatsLoadingSettle();
+          }
         }
       }
     })();
 
     return () => {
       cancelled = true;
+      chatsFetchInFlightRef.current = false;
     };
   }, [sessionId, authState]);
 
@@ -330,6 +417,9 @@ export default function App(): JSX.Element {
       setRange({});
       setAnalysisResult(null);
       setIsChatsLoading(false);
+      chatsLoadingRef.current = false;
+      chatsFetchInFlightRef.current = false;
+      clearChatsSettleTimer();
       setIsMessagesLoading(false);
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : t(locale, "status.failedCreateSession"));
@@ -386,6 +476,9 @@ export default function App(): JSX.Element {
     setHasConsent(false);
     setAllowStorageOption(false);
     setIsChatsLoading(false);
+    chatsLoadingRef.current = false;
+    chatsFetchInFlightRef.current = false;
+    clearChatsSettleTimer();
     setIsMessagesLoading(false);
   }
 
