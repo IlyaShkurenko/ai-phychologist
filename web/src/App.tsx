@@ -19,6 +19,7 @@ import { ChatList } from "./components/ChatList";
 import { ChatView } from "./components/ChatView";
 import { ConsentModal } from "./components/ConsentModal";
 import { LoginModal } from "./components/LoginModal";
+import { MarkdownView } from "./components/MarkdownView";
 import { PromptsPanel } from "./components/PromptsPanel";
 import { ResultPanel } from "./components/ResultPanel";
 import { useSessionSocket, type SessionSocketErrorCode } from "./hooks/useSessionSocket";
@@ -909,7 +910,7 @@ export default function App(): JSX.Element {
                 <p className="muted">{t(locale, "prompts.testing")}</p>
               </div>
             ) : promptTestOutput ? (
-              <pre>{promptTestOutput.answer}</pre>
+              <MarkdownView content={promptTestOutput.answer} />
             ) : (
               <p className="muted">{t(locale, "prompts.noOutputYet")}</p>
             )}
