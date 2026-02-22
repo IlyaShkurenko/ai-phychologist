@@ -478,7 +478,29 @@ export class TdlibTelegramAdapter implements TelegramAdapter {
       });
     }
 
-    return client as RawTdClient;
+    const normalizedClient = client as {
+      connect?: () => Promise<void>;
+      close?: () => Promise<void>;
+      invoke?: (query: Record<string, unknown>) => Promise<any>;
+      on?: (event: "update" | "error", listener: (...args: any[]) => void) => unknown;
+    };
+
+    if (typeof normalizedClient.invoke !== "function" || typeof normalizedClient.on !== "function") {
+      throw new Error("TDLib client does not expose expected invoke/on methods");
+    }
+
+    return {
+      connect:
+        typeof normalizedClient.connect === "function"
+          ? normalizedClient.connect.bind(normalizedClient)
+          : async () => undefined,
+      close:
+        typeof normalizedClient.close === "function"
+          ? normalizedClient.close.bind(normalizedClient)
+          : async () => undefined,
+      invoke: normalizedClient.invoke.bind(normalizedClient),
+      on: normalizedClient.on.bind(normalizedClient) as RawTdClient["on"],
+    };
   }
 
   private resolveTdlibPath(): string | undefined {

@@ -8,10 +8,10 @@ export default defineConfig({
     port: 5173,
     host: "0.0.0.0",
     allowedHosts: ["ai-psychologist.duckdns.org"],
-    hmr: {
-      protocol: "wss",
-      host: "ai-psychologist.duckdns.org",
-      clientPort: 443,
-    },
+    // hmr: {
+    //   protocol: "wss",
+    //   host: "ai-psychologist.duckdns.org",
+    //   clientPort: 443,
+    // },
   },
 });
