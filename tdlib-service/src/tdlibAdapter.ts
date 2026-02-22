@@ -382,8 +382,24 @@ export class TdlibTelegramAdapter implements TelegramAdapter {
     const tdlModule = await import("tdl");
     const addonModule = await import("tdl-tdlib-addon");
 
-    const ClientCtor = (tdlModule as any).Client;
-    const TDLibCtor = (addonModule as any).TDLib;
+    const resolvedTdlModule = ((tdlModule as any).default ?? tdlModule) as Record<string, unknown>;
+    const resolvedAddonModule = ((addonModule as any).default ?? addonModule) as Record<string, unknown>;
+
+    const ClientCtor =
+      (resolvedTdlModule.Client as new (...args: any[]) => unknown | undefined) ??
+      ((tdlModule as any).Client as new (...args: any[]) => unknown | undefined);
+    const TDLibCtor =
+      (resolvedAddonModule.TDLib as new (...args: any[]) => unknown | undefined) ??
+      ((addonModule as any).TDLib as new (...args: any[]) => unknown | undefined);
+
+    if (typeof ClientCtor !== "function") {
+      throw new Error(`Failed to resolve tdl Client constructor. Module keys: ${Object.keys(resolvedTdlModule).join(", ")}`);
+    }
+    if (typeof TDLibCtor !== "function") {
+      throw new Error(
+        `Failed to resolve tdl-tdlib-addon TDLib constructor. Module keys: ${Object.keys(resolvedAddonModule).join(", ")}`,
+      );
+    }
 
     const sessionDir = path.join(this.config.dataDir, sessionId);
     const dbDir = path.join(sessionDir, "db");
