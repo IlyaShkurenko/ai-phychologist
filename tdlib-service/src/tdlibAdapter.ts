@@ -380,26 +380,16 @@ export class TdlibTelegramAdapter implements TelegramAdapter {
 
   private async buildClient(sessionId: string): Promise<RawTdClient> {
     const tdlModule = await import("tdl");
-    const addonModule = await import("tdl-tdlib-addon");
-
     const resolvedTdlModule = ((tdlModule as any).default ?? tdlModule) as Record<string, unknown>;
-    const resolvedAddonModule = ((addonModule as any).default ?? addonModule) as Record<string, unknown>;
-
     const ClientCtor =
       (resolvedTdlModule.Client as new (...args: any[]) => unknown | undefined) ??
       ((tdlModule as any).Client as new (...args: any[]) => unknown | undefined);
-    const TDLibCtor =
-      (resolvedAddonModule.TDLib as new (...args: any[]) => unknown | undefined) ??
-      ((addonModule as any).TDLib as new (...args: any[]) => unknown | undefined);
-
-    if (typeof ClientCtor !== "function") {
-      throw new Error(`Failed to resolve tdl Client constructor. Module keys: ${Object.keys(resolvedTdlModule).join(", ")}`);
-    }
-    if (typeof TDLibCtor !== "function") {
-      throw new Error(
-        `Failed to resolve tdl-tdlib-addon TDLib constructor. Module keys: ${Object.keys(resolvedAddonModule).join(", ")}`,
-      );
-    }
+    const createClientFn =
+      (resolvedTdlModule.createClient as ((opts: Record<string, unknown>) => unknown) | undefined) ??
+      ((tdlModule as any).createClient as ((opts: Record<string, unknown>) => unknown) | undefined);
+    const configureFn =
+      (resolvedTdlModule.configure as ((cfg: Record<string, unknown>) => void) | undefined) ??
+      ((tdlModule as any).configure as ((cfg: Record<string, unknown>) => void) | undefined);
 
     const sessionDir = path.join(this.config.dataDir, sessionId);
     const dbDir = path.join(sessionDir, "db");
@@ -408,24 +398,69 @@ export class TdlibTelegramAdapter implements TelegramAdapter {
     fs.mkdirSync(filesDir, { recursive: true });
 
     const resolvedTdlibPath = this.resolveTdlibPath();
-    let tdlibInstance: unknown;
-    try {
-      tdlibInstance = resolvedTdlibPath ? new TDLibCtor(resolvedTdlibPath) : new TDLibCtor();
-    } catch (error) {
-      throw this.formatTdlibLoadError(error);
-    }
-
-    const client = new ClientCtor(tdlibInstance, {
+    const clientOptions = {
       apiId: this.config.apiId,
       apiHash: this.config.apiHash,
       databaseDirectory: dbDir,
       filesDirectory: filesDir,
-      useDatabase: true,
-      useFileDatabase: true,
-      useChatInfoDatabase: true,
-      useMessageDatabase: true,
-      enableStorageOptimizer: true,
-    });
+      // tdl v7 uses tdlibParameters instead of top-level db flags.
+      tdlibParameters: {
+        use_message_database: true,
+        use_chat_info_database: true,
+        use_file_database: true,
+        use_secret_chats: false,
+        use_test_dc: false,
+      },
+    };
+
+    let client: unknown;
+
+    if (typeof createClientFn === "function" && typeof configureFn === "function") {
+      try {
+        configureFn({
+          ...(resolvedTdlibPath ? { tdjson: resolvedTdlibPath } : {}),
+        });
+        client = createClientFn(clientOptions);
+      } catch (error) {
+        throw this.formatTdlibLoadError(error);
+      }
+    } else {
+      const addonModule = await import("tdl-tdlib-addon");
+      const resolvedAddonModule = ((addonModule as any).default ?? addonModule) as Record<string, unknown>;
+      const TDLibCtor =
+        (resolvedAddonModule.TDLib as new (...args: any[]) => unknown | undefined) ??
+        ((addonModule as any).TDLib as new (...args: any[]) => unknown | undefined);
+
+      if (typeof ClientCtor !== "function") {
+        throw new Error(
+          `Failed to resolve tdl Client constructor. Module keys: ${Object.keys(resolvedTdlModule).join(", ")}`,
+        );
+      }
+      if (typeof TDLibCtor !== "function") {
+        throw new Error(
+          `Failed to resolve tdl-tdlib-addon TDLib constructor. Module keys: ${Object.keys(resolvedAddonModule).join(", ")}`,
+        );
+      }
+
+      let tdlibInstance: unknown;
+      try {
+        tdlibInstance = resolvedTdlibPath ? new TDLibCtor(resolvedTdlibPath) : new TDLibCtor();
+      } catch (error) {
+        throw this.formatTdlibLoadError(error);
+      }
+
+      client = new ClientCtor(tdlibInstance, {
+        apiId: this.config.apiId,
+        apiHash: this.config.apiHash,
+        databaseDirectory: dbDir,
+        filesDirectory: filesDir,
+        useDatabase: true,
+        useFileDatabase: true,
+        useChatInfoDatabase: true,
+        useMessageDatabase: true,
+        enableStorageOptimizer: true,
+      });
+    }
 
     return client as RawTdClient;
   }
