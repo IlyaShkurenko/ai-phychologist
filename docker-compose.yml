@@ -56,7 +56,7 @@ services:
     depends_on:
       - api
     environment:
-      VITE_API_BASE_URL: http://localhost:4001
+      VITE_API_BASE_URL: https://ai-psychologist.duckdns.org
       VITE_REQUEST_TIMEOUT_MS: ${VITE_REQUEST_TIMEOUT_MS:-60000}
       VITE_RANGE_REQUEST_TIMEOUT_MS: ${VITE_RANGE_REQUEST_TIMEOUT_MS:-300000}
       CHOKIDAR_USEPOLLING: "true"
