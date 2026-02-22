@@ -37,6 +37,9 @@ interface TdlibRuntimeConfig {
   maxGroupMembers?: number;
 }
 
+let tdlConfiguredOnce = false;
+let tdlConfiguredTdjsonPath: string | undefined;
+
 export class TdlibTelegramAdapter implements TelegramAdapter {
   private readonly sessions = new Map<string, TdlibSession>();
 
@@ -417,9 +420,22 @@ export class TdlibTelegramAdapter implements TelegramAdapter {
 
     if (typeof createClientFn === "function" && typeof configureFn === "function") {
       try {
-        configureFn({
-          ...(resolvedTdlibPath ? { tdjson: resolvedTdlibPath } : {}),
-        });
+        if (!tdlConfiguredOnce) {
+          configureFn({
+            ...(resolvedTdlibPath ? { tdjson: resolvedTdlibPath } : {}),
+          });
+          tdlConfiguredOnce = true;
+          tdlConfiguredTdjsonPath = resolvedTdlibPath;
+        } else if (
+          resolvedTdlibPath &&
+          tdlConfiguredTdjsonPath &&
+          resolvedTdlibPath !== tdlConfiguredTdjsonPath
+        ) {
+          // tdl@7 can't be reconfigured after first init; keep first path and log once.
+          console.warn(
+            `[tdlib-service] tdl already configured with tdjson path "${tdlConfiguredTdjsonPath}", ignoring new path "${resolvedTdlibPath}"`,
+          );
+        }
         client = createClientFn(clientOptions);
       } catch (error) {
         throw this.formatTdlibLoadError(error);
