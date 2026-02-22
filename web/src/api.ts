@@ -23,6 +23,43 @@ export async function createSession(): Promise<{ sessionId: string; authState: A
   return request("/api/sessions", { method: "POST" });
 }
 
+export async function reportConnectContext(
+  sessionId: string,
+  payload: {
+    ip?: string;
+    browserLocale?: string;
+    browserLanguages?: string[];
+    timeZone?: string;
+    screen?: { width?: number; height?: number; pixelRatio?: number };
+  },
+): Promise<void> {
+  await request(`/api/sessions/${sessionId}/connect-context`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function fetchPublicIpAddress(): Promise<string | null> {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), 5000);
+  try {
+    const response = await fetch("https://api.ipify.org?format=json", {
+      method: "GET",
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      return null;
+    }
+    const payload = (await response.json().catch(() => null)) as { ip?: unknown } | null;
+    console.log(payload)
+    return typeof payload?.ip === "string" && payload.ip.trim() ? payload.ip.trim() : null;
+  } catch {
+    return null;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
 export async function resumeSession(
   sessionId: string,
 ): Promise<{ sessionId: string; authState: AuthState }> {

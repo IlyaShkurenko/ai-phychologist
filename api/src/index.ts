@@ -14,6 +14,7 @@ import { PROMPT_STEP1, PROMPT_STEP2, PROMPT_STEP3 } from "./gaslightingPipeline.
 import { OpenAiAnalyzer } from "./openaiAnalyzer.js";
 import { PromptRepository } from "./promptRepository.js";
 import { SessionRateLimiter } from "./rateLimiter.js";
+import { SessionMetaRepository } from "./sessionMetaRepository.js";
 import { TdlibClient } from "./tdlibClient.js";
 import type { AnalysisConfig, AnalysisMode, ChatMessage, Locale, PromptStep, PromptThemeState } from "./types.js";
 
@@ -45,12 +46,18 @@ const rangeScanMaxBatches = Number(process.env.RANGE_SCAN_MAX_BATCHES ?? 500);
 const mongoUri = process.env.MONGODB_URI?.trim();
 const mongoDbName = process.env.MONGODB_DB_NAME?.trim();
 const mongoPromptCollection = process.env.MONGODB_PROMPTS_COLLECTION?.trim();
+const mongoSessionMetaCollection = process.env.MONGODB_SESSION_META_COLLECTION?.trim();
 
 const tdlibClient = new TdlibClient({ baseUrl: tdlibBaseUrl, requestTimeoutMs: tdlibRequestTimeoutMs });
 const promptRepository = new PromptRepository({
   mongoUri,
   dbName: mongoDbName,
   collectionName: mongoPromptCollection,
+});
+const sessionMetaRepository = new SessionMetaRepository({
+  mongoUri,
+  dbName: mongoDbName,
+  collectionName: mongoSessionMetaCollection,
 });
 const analyzer = new OpenAiAnalyzer(openAiApiKey, openAiModel);
 const eventBridge = new TdlibEventBridge(tdlibBaseUrl);
@@ -109,6 +116,20 @@ const promptTestRequestSchema = z.object({
     startTs: z.number(),
     endTs: z.number(),
   }),
+});
+
+const connectContextSchema = z.object({
+  ip: z.string().min(3).max(128).optional(),
+  browserLocale: z.string().optional(),
+  browserLanguages: z.array(z.string()).optional(),
+  timeZone: z.string().optional(),
+  screen: z
+    .object({
+      width: z.number().optional(),
+      height: z.number().optional(),
+      pixelRatio: z.number().optional(),
+    })
+    .optional(),
 });
 
 function defaultGaslightingPromptSet() {
@@ -403,6 +424,45 @@ app.post("/api/sessions/:sessionId/auth/password", async (req, res) => {
     const payload = z.object({ password: z.string().min(1) }).parse(req.body);
     const response = await tdlibClient.submitPassword(sessionId, payload.password);
     res.json(response);
+  } catch (error) {
+    handleError(req, res, error);
+  }
+});
+
+app.post("/api/sessions/:sessionId/connect-context", async (req, res) => {
+  try {
+    const sessionId = req.params.sessionId;
+    touchSession(sessionId);
+    const payload = connectContextSchema.parse(req.body ?? {});
+
+    if (!sessionMetaRepository.isEnabled()) {
+      res.json({ ok: true, stored: false, reason: "mongo_disabled" });
+      return;
+    }
+
+    const xForwardedFor = req.headers["x-forwarded-for"];
+    const forwarded = Array.isArray(xForwardedFor) ? xForwardedFor[0] : xForwardedFor;
+    const forwardedIp = typeof forwarded === "string" ? forwarded.split(",")[0]?.trim() : undefined;
+    const realIpHeader = req.headers["x-real-ip"];
+    const realIp = Array.isArray(realIpHeader) ? realIpHeader[0] : realIpHeader;
+    const socketIp = req.socket.remoteAddress;
+    const clientIp = forwardedIp || (typeof realIp === "string" ? realIp : undefined) || socketIp || undefined;
+
+    try {
+      await sessionMetaRepository.saveConnectContext({
+        sessionId,
+        ip: payload.ip || clientIp,
+        userAgent: req.headers["user-agent"] as string | undefined,
+        browserLocale: payload.browserLocale,
+        browserLanguages: payload.browserLanguages,
+        timeZone: payload.timeZone,
+        screen: payload.screen,
+      });
+      res.json({ ok: true, stored: true });
+    } catch (storageError) {
+      console.warn("connect-context storage failed:", storageError instanceof Error ? storageError.message : storageError);
+      res.json({ ok: true, stored: false, reason: "storage_failed" });
+    }
   } catch (error) {
     handleError(req, res, error);
   }

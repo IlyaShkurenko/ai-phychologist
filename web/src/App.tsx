@@ -6,8 +6,10 @@ import {
   createSession,
   disconnectSession,
   exportRangeMessagesAsText,
+  fetchPublicIpAddress,
   getMessages,
   listChats,
+  reportConnectContext,
   resumeSession,
   startQrAuthentication,
   submitCode,
@@ -453,6 +455,42 @@ export default function App(): JSX.Element {
       chatsFetchInFlightRef.current = false;
       clearChatsSettleTimer();
       setIsMessagesLoading(false);
+
+      void (async () => {
+        const ip = await fetchPublicIpAddress();
+        const timeZone =
+          typeof Intl !== "undefined"
+            ? Intl.DateTimeFormat().resolvedOptions().timeZone
+            : undefined;
+        const browserLanguages =
+          typeof navigator !== "undefined" && Array.isArray(navigator.languages)
+            ? navigator.languages.filter((item) => typeof item === "string")
+            : undefined;
+        const browserLocale =
+          typeof navigator !== "undefined"
+            ? navigator.language
+            : undefined;
+        const screenInfo =
+          typeof window !== "undefined"
+            ? {
+                width: window.screen?.width,
+                height: window.screen?.height,
+                pixelRatio: window.devicePixelRatio,
+              }
+            : undefined;
+
+        try {
+          await reportConnectContext(created.sessionId, {
+            ip: ip ?? undefined,
+            browserLocale,
+            browserLanguages,
+            timeZone,
+            screen: screenInfo,
+          });
+        } catch {
+          // Non-blocking analytics call: ignore errors to avoid affecting connect flow.
+        }
+      })();
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : t(locale, "status.failedCreateSession"));
     } finally {
