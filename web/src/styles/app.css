@@ -76,6 +76,21 @@ ol {
   font-size: clamp(1.15rem, 2vw, 1.55rem);
 }
 
+.top-title-block {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.top-tabs {
+  display: flex;
+  gap: 0.45rem;
+}
+
+.top-tab.active {
+  background: #12324a;
+  color: #ffffff;
+}
+
 .top-actions {
   display: flex;
   gap: 0.6rem;
@@ -160,6 +175,80 @@ button.secondary:hover,
   gap: 0.9rem;
   grid-template-columns: minmax(250px, 290px) minmax(300px, 1fr) minmax(260px, 320px);
   align-items: start;
+}
+
+.prompts-grid {
+  display: grid;
+}
+
+.prompts-panel {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.prompts-theme-tabs,
+.prompts-step-tabs,
+.prompts-actions {
+  display: flex;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.prompts-step-tab.active,
+.prompts-theme-tab.active {
+  background: #12324a;
+  color: #ffffff;
+}
+
+.prompts-editor {
+  width: 100%;
+  min-height: 280px;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.88rem;
+  line-height: 1.4;
+}
+
+.prompts-versions {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.prompts-version-list {
+  list-style: none;
+  padding: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.prompts-version-item {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.6rem;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.prompts-version-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.86rem;
+  color: var(--muted);
+}
+
+.prompts-version-actions {
+  display: flex;
+  gap: 0.45rem;
+}
+
+.prompts-active-badge {
+  display: inline-block;
+  border-radius: 999px;
+  background: #115e59;
+  color: #ffffff;
+  padding: 0.18rem 0.52rem;
+  font-size: 0.76rem;
 }
 
 .chat-list-panel {
@@ -418,6 +507,19 @@ textarea {
   margin-top: 0.4rem;
 }
 
+.result-panel pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  background: #0f172a;
+  color: #e2e8f0;
+  border-radius: 10px;
+  padding: 0.6rem;
+}
+
 .status-banner {
   position: fixed;
   left: 50%;
@@ -642,6 +744,10 @@ textarea {
     width: 100%;
     display: grid;
     grid-template-columns: 1fr;
+  }
+
+  .top-tabs {
+    width: 100%;
   }
 
   .locale-switch-label {

@@ -208,6 +208,13 @@ export class MockTelegramAdapter implements TelegramAdapter {
     return result;
   }
 
+  async getChatMessageByDate(sessionId: string, chatId: number, dateTs: number): Promise<ChatMessage | null> {
+    const messages = this.mustGetMessages(sessionId, chatId)
+      .filter((message) => message.timestamp <= dateTs)
+      .sort((a, b) => b.timestamp - a.timestamp);
+    return messages[0] ?? null;
+  }
+
   async getMessagesByIds(sessionId: string, chatId: number, ids: number[]): Promise<ChatMessage[]> {
     const idSet = new Set(ids);
     return this.mustGetMessages(sessionId, chatId)

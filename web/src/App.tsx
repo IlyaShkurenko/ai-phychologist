@@ -5,6 +5,7 @@ import {
   clearSession,
   createSession,
   disconnectSession,
+  exportRangeMessagesAsText,
   getMessages,
   listChats,
   resumeSession,
@@ -18,6 +19,7 @@ import { ChatList } from "./components/ChatList";
 import { ChatView } from "./components/ChatView";
 import { ConsentModal } from "./components/ConsentModal";
 import { LoginModal } from "./components/LoginModal";
+import { PromptsPanel } from "./components/PromptsPanel";
 import { ResultPanel } from "./components/ResultPanel";
 import { useSessionSocket, type SessionSocketErrorCode } from "./hooks/useSessionSocket";
 import {
@@ -37,6 +39,7 @@ import type {
   ChatMessage,
   ChatSummary,
   Locale,
+  PromptTestResponse,
   TdlibEvent,
 } from "./types";
 
@@ -60,6 +63,8 @@ interface DateRangeValue {
   from?: Date;
   to?: Date;
 }
+
+type AppTab = "analyzer" | "prompts";
 
 function isAllowedChat(chat: ChatSummary): boolean {
   const maxGroupMembers = 20;
@@ -144,6 +149,29 @@ function wait(ms: number): Promise<void> {
   });
 }
 
+function downloadTextFile(content: string, filename: string): void {
+  const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
+function sanitizeFileNamePart(value: string): string {
+  return value.replace(/[<>:"/\\|?*\x00-\x1F]/g, "_").replace(/\s+/g, "_").slice(0, 80);
+}
+
+function formatDatePart(value: Date): string {
+  const year = String(value.getFullYear());
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  const day = String(value.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 export default function App(): JSX.Element {
   const [locale, setLocale] = useState<Locale>(() => {
     const stored = localStorage.getItem(LOCALE_STORAGE_KEY);
@@ -166,6 +194,9 @@ export default function App(): JSX.Element {
   const [analysisMode, setAnalysisMode] = useState<AnalysisMode>("last300");
   const [analysisConfig, setAnalysisConfig] = useState<AnalysisConfig>(defaultConfig);
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
+  const [promptTestOutput, setPromptTestOutput] = useState<PromptTestResponse | null>(null);
+  const [promptTestLoading, setPromptTestLoading] = useState(false);
+  const [activeTab, setActiveTab] = useState<AppTab>("analyzer");
 
   const [isBusy, setIsBusy] = useState(false);
   const [isChatsLoading, setIsChatsLoading] = useState(false);
@@ -738,6 +769,36 @@ export default function App(): JSX.Element {
     }
   };
 
+  const exportRange = async (): Promise<void> => {
+    if (!sessionId || !selectedChatId) {
+      setStatusMessage(t(locale, "status.selectChatFirst"));
+      return;
+    }
+
+    if (!range.from || !range.to) {
+      setStatusMessage(t(locale, "status.invalidRange"));
+      return;
+    }
+
+    const startTs = toStartOfDayTimestamp(range.from);
+    const endTs = toEndOfDayTimestamp(range.to);
+
+    setIsBusy(true);
+    setStatusMessage(t(locale, "status.exporting"));
+    try {
+      const transcript = await exportRangeMessagesAsText(sessionId, selectedChatId, startTs, endTs);
+      const chatPart = sanitizeFileNamePart(selectedChat?.title ?? `chat-${selectedChatId}`);
+      const startPart = formatDatePart(range.from);
+      const endPart = formatDatePart(range.to);
+      downloadTextFile(transcript, `${chatPart}_${startPart}_${endPart}.txt`);
+      setStatusMessage(t(locale, "status.exportComplete"));
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : t(locale, "status.exportFailed"));
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
   const attemptAnalysis = (mode: AnalysisMode, chatId: number): void => {
     setAnalysisMode(mode);
     if (!hasConsent) {
@@ -778,7 +839,25 @@ export default function App(): JSX.Element {
   return (
     <div className="app-shell">
       <header className="top-bar">
-        <h1>{t(locale, "app.title")}</h1>
+        <div className="top-title-block">
+          <h1>{t(locale, "app.title")}</h1>
+          <div className="top-tabs">
+            <button
+              type="button"
+              className={activeTab === "analyzer" ? "top-tab active" : "secondary top-tab"}
+              onClick={() => setActiveTab("analyzer")}
+            >
+              {t(locale, "app.tab.analyzer")}
+            </button>
+            <button
+              type="button"
+              className={activeTab === "prompts" ? "top-tab active" : "secondary top-tab"}
+              onClick={() => setActiveTab("prompts")}
+            >
+              {t(locale, "app.tab.prompts")}
+            </button>
+          </div>
+        </div>
         <div className="top-actions">
           <label className="locale-switch-label">
             {t(locale, "app.language")}
@@ -800,7 +879,43 @@ export default function App(): JSX.Element {
         </div>
       </header>
 
-      {!sessionId ? (
+      {activeTab === "prompts" ? (
+        <main className="workspace-grid prompts-workspace-grid">
+          <ChatList
+            locale={locale}
+            chats={chats}
+            selectedChatId={selectedChatId}
+            onSelectChat={(chatId) => {
+              setSelectedChatId(chatId);
+            }}
+            onAnalyzeLast300={() => undefined}
+            disabled={isBusy}
+            loading={isChatsLoading}
+          />
+          <PromptsPanel
+            locale={locale}
+            sessionId={sessionId}
+            selectedChat={selectedChat}
+            range={range}
+            onRangeChange={setRange}
+            onTestOutput={setPromptTestOutput}
+            onTestLoadingChange={setPromptTestLoading}
+          />
+          <section className="panel result-panel">
+            <h2>{t(locale, "prompts.testOutput")}</h2>
+            {promptTestLoading ? (
+              <div className="chat-list-loading">
+                <span className="chat-list-spinner" />
+                <p className="muted">{t(locale, "prompts.testing")}</p>
+              </div>
+            ) : promptTestOutput ? (
+              <pre>{promptTestOutput.answer}</pre>
+            ) : (
+              <p className="muted">{t(locale, "prompts.noOutputYet")}</p>
+            )}
+          </section>
+        </main>
+      ) : !sessionId ? (
         <main className="home-panel panel">
           <h2>{t(locale, "home.title")}</h2>
           <p className="muted">{t(locale, "home.privacy")}</p>
@@ -850,6 +965,9 @@ export default function App(): JSX.Element {
                 attemptAnalysis("range", selectedChatId);
               }
             }}
+            onExportRange={() => {
+              void exportRange();
+            }}
             onAnalyzeLast300={() => {
               if (selectedChatId) {
                 attemptAnalysis("last300", selectedChatId);
@@ -875,7 +993,7 @@ export default function App(): JSX.Element {
 
       <LoginModal
         locale={locale}
-        open={Boolean(sessionId) && authState !== "ready"}
+        open={activeTab === "analyzer" && Boolean(sessionId) && authState !== "ready"}
         authState={authState}
         qrLink={qrLink}
         statusMessage={statusMessage}
@@ -886,7 +1004,12 @@ export default function App(): JSX.Element {
         onSubmitPassword={handleSubmitPassword}
       />
 
-      <ConsentModal locale={locale} open={consentOpen} onAccept={handleConsentAccept} onCancel={handleConsentCancel} />
+      <ConsentModal
+        locale={locale}
+        open={activeTab === "analyzer" && consentOpen}
+        onAccept={handleConsentAccept}
+        onCancel={handleConsentCancel}
+      />
     </div>
   );
 }

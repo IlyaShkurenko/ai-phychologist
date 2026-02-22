@@ -1,8 +1,0 @@
-schema: gaslighting_step2_reaction
-log_id: 5
-
-=== MODEL OUTPUT ===
-{
-  "content": "{\"reaction_type\":\"non_engagement\",\"normal_engagement\":false,\"non_engagement\":true,\"fact_denial\":false,\"perception_attack\":false,\"reality_avoidance\":false,\"notes\":\"Якорный факт: «Писала дня 3 назад)». В следующих сообщениях partner не подтверждает и не опровергает, что писала 3 дня назад, и не уточняет детали. Вместо ответа по факту идёт смена темы/рассуждения, затем короткие реплики «Ну скажи / Не ищи / Давай» и смех, без проверки или обсуждения самого факта. Прямого отрицания факта, атаки на восприятие или явного отказа обсуждать факт нет — просто отсутствует ответ по существу.\"}",
-  "finish_reason": "stop"
-}

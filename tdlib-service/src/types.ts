@@ -75,6 +75,11 @@ export interface TelegramAdapter {
     chatId: number,
     range: HistoryRange,
   ): Promise<ChatMessage[]>;
+  getChatMessageByDate(
+    sessionId: string,
+    chatId: number,
+    dateTs: number,
+  ): Promise<ChatMessage | null>;
   getMessagesByIds(
     sessionId: string,
     chatId: number,

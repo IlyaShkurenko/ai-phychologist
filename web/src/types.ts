@@ -42,6 +42,34 @@ export interface AnalysisConfig {
 
 export type AnalysisMode = "last300" | "range" | "selected";
 
+export type PromptStep = "step1" | "step2" | "step3";
+
+export interface PromptVersion {
+  id: string;
+  theme: "gaslighting";
+  step: PromptStep;
+  version: number;
+  content: string;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PromptStepState {
+  step: PromptStep;
+  versions: PromptVersion[];
+  activeVersionId?: string;
+}
+
+export interface PromptThemeState {
+  theme: "gaslighting";
+  steps: PromptStepState[];
+}
+
+export interface PromptTestResponse {
+  answer: string;
+}
+
 export interface GaslightingResult {
   episodes: {
     anchor: {

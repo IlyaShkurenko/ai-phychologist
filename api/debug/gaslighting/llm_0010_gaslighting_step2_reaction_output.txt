@@ -1,8 +1,0 @@
-schema: gaslighting_step2_reaction
-log_id: 10
-
-=== MODEL OUTPUT ===
-{
-  "content": "{\"reaction_type\":\"non_engagement\",\"normal_engagement\":false,\"non_engagement\":true,\"fact_denial\":false,\"perception_attack\":false,\"reality_avoidance\":true,\"notes\":\"На якорный факт («после первого созвона я сходу оценил твои навыки») partner не отвечает по существу: нет подтверждения/опровержения/уточняющих вопросов. Вместо обсуждения факта partner уводит разговор в другую плоскость (саркастические реплики «Ну детектор/Полиграф», затем возвращает к другой теме про «не делишься» и «кричишь громче всех»), что выглядит как уход от проверки факта (reality_avoidance) и в целом non-engagement.\"}",
-  "finish_reason": "stop"
-}

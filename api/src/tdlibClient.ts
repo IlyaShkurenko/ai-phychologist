@@ -86,6 +86,7 @@ export class TdlibClient {
     chatId: number,
     limit: number,
     fromMessageId?: number,
+    timeoutMs?: number,
   ): Promise<ChatMessage[]> {
     const params = new URLSearchParams({ limit: String(limit) });
     if (fromMessageId) {
@@ -94,6 +95,8 @@ export class TdlibClient {
 
     const result = await this.request<{ messages: ChatMessage[] }>(
       `/sessions/${sessionId}/chats/${chatId}/history?${params.toString()}`,
+      undefined,
+      timeoutMs,
     );
     return result.messages;
   }
@@ -103,27 +106,54 @@ export class TdlibClient {
     chatId: number,
     startTs: number,
     endTs: number,
+    timeoutMs?: number,
   ): Promise<ChatMessage[]> {
     const result = await this.request<{ messages: ChatMessage[] }>(
       `/sessions/${sessionId}/chats/${chatId}/history-by-date?startTs=${startTs}&endTs=${endTs}`,
+      undefined,
+      timeoutMs,
     );
     return result.messages;
   }
 
-  async getMessagesByIds(sessionId: string, chatId: number, ids: number[]): Promise<ChatMessage[]> {
+  async getChatMessageByDate(
+    sessionId: string,
+    chatId: number,
+    dateTs: number,
+    timeoutMs?: number,
+  ): Promise<ChatMessage | null> {
+    const result = await this.request<{ message?: ChatMessage | null }>(
+      `/sessions/${sessionId}/chats/${chatId}/message-by-date?dateTs=${dateTs}`,
+      undefined,
+      timeoutMs,
+    );
+    return result.message ?? null;
+  }
+
+  async getMessagesByIds(
+    sessionId: string,
+    chatId: number,
+    ids: number[],
+    timeoutMs?: number,
+  ): Promise<ChatMessage[]> {
     const result = await this.request<{ messages: ChatMessage[] }>(
       `/sessions/${sessionId}/chats/${chatId}/messages/by-ids`,
       {
         method: "POST",
         body: JSON.stringify({ ids }),
       },
+      timeoutMs,
     );
     return result.messages;
   }
 
-  private async request<T = unknown>(path: string, init?: RequestInit): Promise<T> {
+  private async request<T = unknown>(path: string, init?: RequestInit, timeoutMs?: number): Promise<T> {
+    const effectiveTimeoutMs =
+      typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs > 0
+        ? timeoutMs
+        : this.requestTimeoutMs;
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.requestTimeoutMs);
+    const timeoutId = setTimeout(() => controller.abort(), effectiveTimeoutMs);
 
     let response: Response;
     try {
@@ -137,7 +167,7 @@ export class TdlibClient {
       });
     } catch (error) {
       if (error instanceof Error && error.name === "AbortError") {
-        throw new Error(`TDLib request timeout after ${this.requestTimeoutMs}ms`);
+        throw new Error(`TDLib request timeout after ${effectiveTimeoutMs}ms`);
       }
       throw error;
     } finally {

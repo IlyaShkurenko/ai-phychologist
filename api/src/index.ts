@@ -10,10 +10,12 @@ import { WebSocketServer } from "ws";
 import { z } from "zod";
 
 import { TdlibEventBridge } from "./eventBridge.js";
+import { PROMPT_STEP1, PROMPT_STEP2, PROMPT_STEP3 } from "./gaslightingPipeline.js";
 import { OpenAiAnalyzer } from "./openaiAnalyzer.js";
+import { PromptRepository } from "./promptRepository.js";
 import { SessionRateLimiter } from "./rateLimiter.js";
 import { TdlibClient } from "./tdlibClient.js";
-import type { AnalysisConfig, AnalysisMode, ChatMessage, Locale } from "./types.js";
+import type { AnalysisConfig, AnalysisMode, ChatMessage, Locale, PromptStep, PromptThemeState } from "./types.js";
 
 dotenv.config();
 const apiModuleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -36,10 +38,20 @@ const extensiveLogging = process.env.EXTENSIVE_LOGGING === "true";
 const maxGroupMembers = Number(process.env.TDLIB_MAX_GROUP_MEMBERS ?? 20);
 const tdlibBaseUrl = process.env.TDLIB_BASE_URL ?? "http://localhost:4002";
 const tdlibRequestTimeoutMs = Number(process.env.TDLIB_REQUEST_TIMEOUT_MS ?? 60000);
+const rangeTdlibRequestTimeoutMs = Number(process.env.TDLIB_RANGE_REQUEST_TIMEOUT_MS ?? 180000);
 const openAiApiKey = process.env.OPENAI_API_KEY?.trim();
 const openAiModel = process.env.OPENAI_MODEL ?? "gpt-5.2";
+const rangeScanMaxBatches = Number(process.env.RANGE_SCAN_MAX_BATCHES ?? 500);
+const mongoUri = process.env.MONGODB_URI?.trim();
+const mongoDbName = process.env.MONGODB_DB_NAME?.trim();
+const mongoPromptCollection = process.env.MONGODB_PROMPTS_COLLECTION?.trim();
 
 const tdlibClient = new TdlibClient({ baseUrl: tdlibBaseUrl, requestTimeoutMs: tdlibRequestTimeoutMs });
+const promptRepository = new PromptRepository({
+  mongoUri,
+  dbName: mongoDbName,
+  collectionName: mongoPromptCollection,
+});
 const analyzer = new OpenAiAnalyzer(openAiApiKey, openAiModel);
 const eventBridge = new TdlibEventBridge(tdlibBaseUrl);
 const rateLimiter = new SessionRateLimiter(60_000, 5);
@@ -52,6 +64,8 @@ interface SessionState {
 
 const sessions = new Map<string, SessionState>();
 const sessionTtlMs = Number(process.env.SESSION_TTL_MS ?? 7 * 24 * 60 * 60 * 1000);
+let promptStorageStatus: "disabled" | "checking" | "ready" | "error" = promptRepository.isEnabled() ? "checking" : "disabled";
+let promptStorageLastError: string | null = null;
 
 const analysisConfigSchema = z.object({
   theme: z.enum(["Love", "Work", "Friendship", "Gaslighting", ""]).optional(),
@@ -79,6 +93,55 @@ const analysisRequestSchema = z.object({
 const resumeSessionSchema = z.object({
   sessionId: z.string().min(8).max(128),
 });
+
+const promptStepSchema = z.enum(["step1", "step2", "step3"]);
+const createPromptVersionSchema = z.object({
+  content: z.string().min(1),
+});
+const activatePromptVersionSchema = z.object({
+  versionId: z.string().min(1),
+});
+const promptTestRequestSchema = z.object({
+  step: promptStepSchema,
+  prompt: z.string().min(1),
+  locale: z.enum(["ru", "en"]).default("ru"),
+  selection: z.object({
+    startTs: z.number(),
+    endTs: z.number(),
+  }),
+});
+
+function defaultGaslightingPromptSet() {
+  return {
+    step1: PROMPT_STEP1,
+    step2: PROMPT_STEP2,
+    step3: PROMPT_STEP3,
+  };
+}
+
+function buildDefaultPromptThemeState(): PromptThemeState {
+  const defaults = defaultGaslightingPromptSet();
+  const now = new Date().toISOString();
+  return {
+    theme: "gaslighting",
+    steps: (["step1", "step2", "step3"] as const).map((step) => ({
+      step,
+      activeVersionId: `builtin-${step}`,
+      versions: [
+        {
+          id: `builtin-${step}`,
+          theme: "gaslighting",
+          step,
+          version: 1,
+          content: defaults[step],
+          isActive: true,
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+    })),
+  };
+}
 
 const colors = {
   reset: "\x1b[0m",
@@ -232,6 +295,11 @@ app.get("/health", (_req, res) => {
     ok: true,
     openaiConfigured: Boolean(openAiApiKey),
     openaiModel: openAiModel,
+    promptStorage: {
+      enabled: promptRepository.isEnabled(),
+      status: promptStorageStatus,
+      lastError: promptStorageLastError,
+    },
   });
 });
 
@@ -389,9 +457,174 @@ app.get("/api/sessions/:sessionId/chats/:chatId/messages/range", async (req, res
     if (!Number.isFinite(startTs) || !Number.isFinite(endTs)) {
       throw new Error("startTs and endTs are required");
     }
+    if (endTs < startTs) {
+      throw new Error("endTs must be greater than or equal to startTs");
+    }
 
-    const messages = await tdlibClient.getChatHistoryByDate(sessionId, chatId, startTs, endTs);
+    const messages = await fetchMessagesByDateRange(
+      tdlibClient,
+      sessionId,
+      chatId,
+      startTs,
+      endTs,
+      rangeScanMaxBatches,
+    );
     res.json({ messages });
+  } catch (error) {
+    handleError(req, res, error);
+  }
+});
+
+app.get("/api/sessions/:sessionId/chats/:chatId/messages/range/export.txt", async (req, res) => {
+  try {
+    const sessionId = req.params.sessionId;
+    touchSession(sessionId);
+    const chatId = Number(req.params.chatId);
+    const startTs = Number(req.query.startTs);
+    const endTs = Number(req.query.endTs);
+
+    if (!Number.isFinite(startTs) || !Number.isFinite(endTs)) {
+      throw new Error("startTs and endTs are required");
+    }
+    if (endTs < startTs) {
+      throw new Error("endTs must be greater than or equal to startTs");
+    }
+
+    const rangeMessages = await fetchMessagesByDateRange(
+      tdlibClient,
+      sessionId,
+      chatId,
+      startTs,
+      endTs,
+      rangeScanMaxBatches,
+    );
+    const sorted = [...rangeMessages].sort((a, b) => a.timestamp - b.timestamp);
+    if (sorted.length === 0) {
+      throw new Error("No messages found in selected date range");
+    }
+    const messageById = new Map<number, ChatMessage>(sorted.map((item) => [item.id, item] as const));
+
+    const missingReplyIds = [
+      ...new Set(
+        sorted
+          .map((item) => item.replyToMessageId)
+          .filter((value): value is number => typeof value === "number" && !messageById.has(value)),
+      ),
+    ];
+
+    if (missingReplyIds.length > 0) {
+      const replyMessages = await tdlibClient.getMessagesByIds(
+        sessionId,
+        chatId,
+        missingReplyIds,
+        rangeTdlibRequestTimeoutMs,
+      );
+      for (const item of replyMessages) {
+        messageById.set(item.id, item);
+      }
+    }
+
+    const transcript = sorted.map((item) => formatExportLine(item, messageById)).join("\n");
+
+    res.setHeader("Content-Type", "text/plain; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="chat-${chatId}-${startTs}-${endTs}.txt"`);
+    res.send(transcript);
+  } catch (error) {
+    handleError(req, res, error);
+  }
+});
+
+app.get("/api/prompts/gaslighting", async (_req, res) => {
+  try {
+    const state = await promptRepository.getGaslightingThemeState(defaultGaslightingPromptSet());
+    res.json(state);
+  } catch (error) {
+    const errorName =
+      typeof error === "object" && error !== null && "name" in error
+        ? String((error as { name?: unknown }).name ?? "")
+        : "";
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const isMongoConnectivityIssue =
+      errorName.toLowerCase().includes("mongo") ||
+      errorMessage.toLowerCase().includes("ssl routines") ||
+      errorMessage.toLowerCase().includes("tls");
+
+    if (isMongoConnectivityIssue) {
+      console.warn("Prompt storage unavailable, serving built-in prompts:", errorMessage);
+      res.json(buildDefaultPromptThemeState());
+      return;
+    }
+    handleError(_req, res, error);
+  }
+});
+
+app.post("/api/prompts/gaslighting/:step/versions", async (req, res) => {
+  try {
+    const step = promptStepSchema.parse(req.params.step) as PromptStep;
+    const payload = createPromptVersionSchema.parse(req.body);
+    const version = await promptRepository.createGaslightingVersion(
+      step,
+      payload.content,
+      defaultGaslightingPromptSet(),
+    );
+    res.status(201).json({ version });
+  } catch (error) {
+    handleError(req, res, error);
+  }
+});
+
+app.post("/api/prompts/gaslighting/:step/activate", async (req, res) => {
+  try {
+    const step = promptStepSchema.parse(req.params.step) as PromptStep;
+    const payload = activatePromptVersionSchema.parse(req.body);
+    await promptRepository.activateGaslightingVersion(
+      step,
+      payload.versionId,
+      defaultGaslightingPromptSet(),
+    );
+    res.json({ ok: true });
+  } catch (error) {
+    handleError(req, res, error);
+  }
+});
+
+app.post("/api/sessions/:sessionId/chats/:chatId/prompts/gaslighting/test", async (req, res) => {
+  try {
+    const sessionId = req.params.sessionId;
+    touchSession(sessionId);
+    const chatId = Number(req.params.chatId);
+    const payload = promptTestRequestSchema.parse(req.body);
+
+    if (payload.selection.endTs < payload.selection.startTs) {
+      throw new Error("endTs must be greater than or equal to startTs");
+    }
+
+    const messages = await fetchMessagesByDateRange(
+      tdlibClient,
+      sessionId,
+      chatId,
+      payload.selection.startTs,
+      payload.selection.endTs,
+      rangeScanMaxBatches,
+    );
+
+    if (messages.length === 0) {
+      throw new Error("No messages found in selected date range");
+    }
+
+    const result = await analyzer.runPromptLabDirectTest({
+      step: payload.step,
+      prompt: payload.prompt,
+      messages,
+      locale: payload.locale as Locale,
+    });
+    if (!result || typeof result !== "object" || Array.isArray(result)) {
+      throw new Error("Prompt test returned invalid result shape");
+    }
+
+    res.json({
+      answer: result.answer,
+    });
   } catch (error) {
     handleError(req, res, error);
   }
@@ -467,6 +700,7 @@ server.listen(apiPort, () => {
   console.log(`api service listening on :${apiPort}`);
   console.log(`openai configured: ${openAiApiKey ? "yes" : "no"} (model=${openAiModel})`);
   console.log(`request logging: ${extensiveLogging ? "EXTENSIVE" : "BASIC"}${isGcp ? " (gcp mode)" : ""}`);
+  void warmupPromptStorageOnStartup();
 });
 
 setInterval(() => {
@@ -480,6 +714,28 @@ setInterval(() => {
     }
   }
 }, 60_000).unref();
+
+async function warmupPromptStorageOnStartup(): Promise<void> {
+  if (!promptRepository.isEnabled()) {
+    promptStorageStatus = "disabled";
+    promptStorageLastError = null;
+    console.log("prompt storage: disabled (MONGODB_URI is not set)");
+    return;
+  }
+
+  promptStorageStatus = "checking";
+  promptStorageLastError = null;
+  try {
+    await promptRepository.getGaslightingThemeState(defaultGaslightingPromptSet());
+    promptStorageStatus = "ready";
+    console.log("prompt storage: ready (MongoDB connected)");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    promptStorageStatus = "error";
+    promptStorageLastError = message;
+    console.warn(`prompt storage: startup check failed (${message})`);
+  }
+}
 
 async function resolveMessagesForAnalysis(
   client: TdlibClient,
@@ -508,7 +764,7 @@ async function resolveMessagesForAnalysis(
     if (!startTs || !endTs) {
       throw new Error("startTs and endTs are required for range mode");
     }
-    return client.getChatHistoryByDate(sessionId, chatId, startTs, endTs);
+    return fetchMessagesByDateRange(client, sessionId, chatId, startTs, endTs, rangeScanMaxBatches);
   }
 
   return fetchLastMessages(client, sessionId, chatId, 300);
@@ -564,11 +820,19 @@ function touchSession(sessionId: string): void {
 
 function handleError(req: Request, res: Response, error: unknown): void {
   const message = error instanceof Error ? error.message : "Unexpected error";
+  const errorName =
+    typeof error === "object" && error !== null && "name" in error
+      ? String((error as { name?: unknown }).name ?? "")
+      : "";
   let status = 400;
   if (message.includes("Unknown session")) {
     status = 404;
   } else if (message.toLowerCase().includes("too many")) {
     status = 429;
+  } else if (errorName.toLowerCase().includes("mongo")) {
+    status = 503;
+  } else if (message.toLowerCase().includes("mongodb")) {
+    status = 503;
   }
 
   const stack = error instanceof Error ? error.stack : undefined;
@@ -595,4 +859,115 @@ function handleError(req: Request, res: Response, error: unknown): void {
   });
 
   res.status(status).json({ error: message });
+}
+
+async function fetchMessagesByDateRange(
+  client: TdlibClient,
+  sessionId: string,
+  chatId: number,
+  startTs: number,
+  endTs: number,
+  maxBatches: number,
+): Promise<ChatMessage[]> {
+  const safeMaxBatches =
+    Number.isFinite(maxBatches) && maxBatches > 0 ? Math.floor(maxBatches) : 500;
+
+  const anchorMessage = await client.getChatMessageByDate(
+    sessionId,
+    chatId,
+    endTs,
+    rangeTdlibRequestTimeoutMs,
+  );
+  if (!anchorMessage || !Number.isFinite(anchorMessage.id) || anchorMessage.id <= 0) {
+    return [];
+  }
+  if (anchorMessage.timestamp < startTs) {
+    return [];
+  }
+
+  let fromMessageId: number | undefined = anchorMessage.id;
+  const inRange: ChatMessage[] = [];
+
+  for (let batchIndex = 0; batchIndex < safeMaxBatches; batchIndex += 1) {
+    const currentCursor = fromMessageId;
+    const batch = await client.getChatHistory(
+      sessionId,
+      chatId,
+      100,
+      currentCursor,
+      rangeTdlibRequestTimeoutMs,
+    );
+    if (batch.length === 0) {
+      break;
+    }
+
+    for (const item of batch) {
+      if (item.timestamp >= startTs && item.timestamp <= endTs) {
+        inRange.push(item);
+      }
+    }
+
+    const oldest = batch[0];
+    const oldestId = oldest?.id;
+    const oldestTs = oldest?.timestamp ?? 0;
+    if (!oldestId) {
+      break;
+    }
+    if (oldestTs < startTs) {
+      break;
+    }
+    if (currentCursor && oldestId >= currentCursor) {
+      break;
+    }
+
+    fromMessageId = oldestId;
+  }
+
+  const deduped = new Map<number, ChatMessage>();
+  for (const item of inRange) {
+    deduped.set(item.id, item);
+  }
+
+  return [...deduped.values()].sort((a, b) => a.timestamp - b.timestamp);
+}
+
+function formatExportLine(message: ChatMessage, messageById: Map<number, ChatMessage>): string {
+  const parts = [
+    `msg_id=${message.id}`,
+    `${mapSenderLabel(message.senderLabel)}: ${sanitizeTranscriptText(message.text)} (${formatTranscriptTimestamp(message.timestamp)})`,
+  ];
+
+  if (typeof message.replyToMessageId === "number") {
+    const replied = messageById.get(message.replyToMessageId);
+    const replySpeaker = replied ? mapSenderLabel(replied.senderLabel) : "unknown";
+    const replyText = replied ? sanitizeTranscriptText(replied.text) : "unavailable";
+    parts.push(`reply_to=${message.replyToMessageId} (${replySpeaker}) -> ${replyText}`);
+  }
+
+  return parts.join(" | ");
+}
+
+function mapSenderLabel(label: ChatMessage["senderLabel"]): "self" | "partner" {
+  return label === "Me" ? "self" : "partner";
+}
+
+function sanitizeTranscriptText(value: string): string {
+  return value.replace(/\s+/g, " ").trim().replace(/\|/g, "¦");
+}
+
+function formatTranscriptTimestamp(timestamp: number): string {
+  if (!Number.isFinite(timestamp)) {
+    return "";
+  }
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  const yyyy = String(date.getFullYear());
+  const mm = String(date.getMonth() + 1).padStart(2, "0");
+  const dd = String(date.getDate()).padStart(2, "0");
+  const hh = String(date.getHours()).padStart(2, "0");
+  const min = String(date.getMinutes()).padStart(2, "0");
+  const sec = String(date.getSeconds()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd} ${hh}:${min}:${sec}`;
 }

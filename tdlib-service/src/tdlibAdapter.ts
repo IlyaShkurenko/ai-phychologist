@@ -337,6 +337,25 @@ export class TdlibTelegramAdapter implements TelegramAdapter {
     return result;
   }
 
+  async getChatMessageByDate(
+    sessionId: string,
+    chatId: number,
+    dateTs: number,
+  ): Promise<ChatMessage | null> {
+    const session = this.mustGetSession(sessionId);
+    const response = await session.client.invoke({
+      _: "getChatMessageByDate",
+      chat_id: chatId,
+      date: Math.floor(dateTs / 1000),
+    });
+
+    if (!response || typeof response !== "object" || !("id" in response)) {
+      return null;
+    }
+
+    return this.mapMessage(session, chatId, response);
+  }
+
   async getMessagesByIds(sessionId: string, chatId: number, ids: number[]): Promise<ChatMessage[]> {
     const session = this.mustGetSession(sessionId);
     if (ids.length === 0) {

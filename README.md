@@ -14,6 +14,7 @@ MVP web app for analyzing selected Telegram messages using TDLib + OpenAI.
   - manually selected messages
 - Provides configurable analysis options in a collapsible bottom sheet.
 - Displays concise structured analysis with summary/signals/reply options/outcomes.
+- Includes `Prompts` tab to manage versioned gaslighting system prompts (step1/step2/step3) with active version selection.
 
 ## Privacy/storage policy (MVP)
 
@@ -56,6 +57,12 @@ Copy `.env.example` to `.env` and adjust values.
 - `VITE_REQUEST_TIMEOUT_MS` (optional; default `60000`)
 - `TDLIB_REQUEST_TIMEOUT_MS` (optional; default `30000`)
 - `SESSION_TTL_MS` (default `604800000` = 7 days)
+- `TDLIB_REQUEST_TIMEOUT_MS` (default `60000`)
+- `TDLIB_RANGE_REQUEST_TIMEOUT_MS` (default `180000`)
+- `RANGE_SCAN_MAX_BATCHES` (default `500`)
+- `MONGODB_URI` (required for prompt version storage)
+- `MONGODB_DB_NAME` (default `telegram_chat_analyzer`)
+- `MONGODB_PROMPTS_COLLECTION` (default `prompt_versions`)
 
 ### TDLib service
 
@@ -69,6 +76,8 @@ Copy `.env.example` to `.env` and adjust values.
 ### Web
 
 - `VITE_API_BASE_URL` (default `http://localhost:4001`)
+- `VITE_REQUEST_TIMEOUT_MS` (default `60000`)
+- `VITE_RANGE_REQUEST_TIMEOUT_MS` (default `300000`)
 
 ## Run locally (without Docker)
 
@@ -137,6 +146,15 @@ Common alternative path on Intel Mac: `/usr/local/lib/libtdjson.dylib`.
 - TDLib event stream failures with reconnect attempts
 - OpenAI rate limiting guard (in-memory, per session)
 - API retries for OpenAI analysis (small retry window)
+
+## Prompt versioning (Gaslighting steps)
+
+- Open `Prompts` tab in UI.
+- Theme `Gaslighting` contains 3 editable steps (`step1`, `step2`, `step3`).
+- Saving creates a **new version** for that step.
+- Any version can be marked **active**.
+- Active versions are loaded by backend and used as system prompts for gaslighting pipeline.
+- Dynamic per-request transcript/context is still injected separately; only system prompt text is versioned.
 
 ## Mobile responsiveness
 

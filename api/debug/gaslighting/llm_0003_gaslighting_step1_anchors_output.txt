@@ -1,8 +1,0 @@
-schema: gaslighting_step1_anchors
-log_id: 3
-
-=== MODEL OUTPUT ===
-{
-  "content": "{\"anchors\":[{\"msg_id\":\"1073634869248\",\"fact_span\":\"я думал раньше спросит про то говоришь ли ты сама с собой\",\"anchor_event\":\"Партнёр раньше не спросил(а) про то, говорит ли он(а) сам(а) с собой.\",\"action_type\":\"other_fact\",\"confidence\":0.42},{\"msg_id\":\"1073804738560\",\"fact_span\":\"Ты не замужем\",\"anchor_event\":\"Партнёр не состоит в браке.\",\"action_type\":\"other_fact\",\"confidence\":0.55}]}",
-  "finish_reason": "stop"
-}

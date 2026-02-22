@@ -24,6 +24,7 @@ interface ChatViewProps {
   onAnalyzeSelected: () => void;
   onAnalyzeRange: () => void;
   onAnalyzeLast300: () => void;
+  onExportRange: () => void;
 }
 
 export function ChatView({
@@ -41,6 +42,7 @@ export function ChatView({
   onAnalyzeSelected,
   onAnalyzeRange,
   onAnalyzeLast300,
+  onExportRange,
 }: ChatViewProps): JSX.Element {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const shouldInitialScrollToBottomRef = useRef(false);
@@ -125,6 +127,9 @@ export function ChatView({
         </button>
         <button type="button" onClick={onAnalyzeRange} disabled={actionBusy || loadingMessages || !hasRange}>
           {t(locale, "chatView.analyzeRange")}
+        </button>
+        <button type="button" onClick={onExportRange} disabled={actionBusy || loadingMessages || !hasRange}>
+          {t(locale, "chatView.exportRangeTxt")}
         </button>
         <button
           type="button"

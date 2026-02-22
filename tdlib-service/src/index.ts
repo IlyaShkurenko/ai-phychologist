@@ -212,6 +212,24 @@ app.get("/sessions/:sessionId/chats/:chatId/history-by-date", async (req, res) =
   }
 });
 
+app.get("/sessions/:sessionId/chats/:chatId/message-by-date", async (req, res) => {
+  try {
+    const sessionId = req.params.sessionId;
+    assertSessionExists(sessionId);
+    const chatId = Number(req.params.chatId);
+    const dateTs = Number(req.query.dateTs);
+
+    if (!Number.isFinite(dateTs)) {
+      throw new Error("dateTs is required");
+    }
+
+    const message = await adapter.getChatMessageByDate(sessionId, chatId, dateTs);
+    res.json({ message });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
 app.post("/sessions/:sessionId/chats/:chatId/messages/by-ids", async (req, res) => {
   try {
     const sessionId = req.params.sessionId;

@@ -9,10 +9,12 @@ import type {
   GaslightingAggregates,
   GaslightingAnchor,
   GaslightingEpisode,
+  GaslightingPromptSet,
   GaslightingResult,
   GaslightingStep2,
   GaslightingVerification,
   Locale,
+  PromptStep,
 } from "./types.js";
 
 export const PROMPT_STEP1 = `Ты — модуль структурного анализа переписки в отношениях.
@@ -355,6 +357,14 @@ const STEP2_DEBUG_DIR = join(API_ROOT_DIR, "debug", "gaslighting");
 const STEP3_REASONING_MODEL = process.env.OPENAI_STEP3_MODEL ?? "gpt-5.2";
 let llmLogSequence = 0;
 
+function defaultPromptSet(): GaslightingPromptSet {
+  return {
+    step1: PROMPT_STEP1,
+    step2: PROMPT_STEP2,
+    step3: PROMPT_STEP3,
+  };
+}
+
 export class GaslightingPipeline {
   constructor(
     private readonly client: OpenAI,
@@ -366,14 +376,19 @@ export class GaslightingPipeline {
     locale: Locale,
     options?: {
       anchorSource?: AnchorSourceMode;
+      prompts?: Partial<GaslightingPromptSet>;
     },
   ): Promise<GaslightingResult> {
     const anchorSource: AnchorSourceMode = options?.anchorSource ?? "partner_only";
+    const prompts: GaslightingPromptSet = {
+      ...defaultPromptSet(),
+      ...(options?.prompts ?? {}),
+    };
     const conversation = this.toConversation(messages);
     writeJsonDebug("conversation.json", {
       conversation,
     });
-    const anchors = await this.detectAnchors(conversation, locale, anchorSource);
+    const anchors = await this.detectAnchors(conversation, locale, anchorSource, prompts.step1);
 
     mkdirSync(STEP2_DEBUG_DIR, { recursive: true });
     writeJsonDebug("anchors.json", {
@@ -400,7 +415,7 @@ export class GaslightingPipeline {
         const anchorLine = formatTranscriptLine(anchorMessage);
         const step2 =
           followingMessages.length > 0
-            ? await this.classifyStep2(anchorLine, anchor, previousMessages, followingMessages, locale)
+            ? await this.classifyStep2(anchorLine, anchor, previousMessages, followingMessages, locale, prompts.step2)
             : this.emptyStep2(locale);
 
         const gaslighting = step2.fact_denial && (step2.perception_attack || step2.reality_avoidance);
@@ -441,6 +456,7 @@ export class GaslightingPipeline {
         conversation,
         episodesBase.map((item) => item.anchor),
         locale,
+        prompts.step3,
       );
     } catch (error) {
       writeJsonDebug("step3_batch_error.json", {
@@ -479,10 +495,86 @@ export class GaslightingPipeline {
     };
   }
 
+  async testStep(
+    messages: ChatMessage[],
+    locale: Locale,
+    options: {
+      step: PromptStep;
+      prompt: string;
+      anchorSource?: AnchorSourceMode;
+    },
+  ): Promise<unknown> {
+    const conversation = this.toConversation(messages);
+    const anchorSource: AnchorSourceMode = options.anchorSource ?? "partner_only";
+    if (options.step === "step1") {
+      const anchors = await this.detectAnchors(conversation, locale, anchorSource, options.prompt);
+      return {
+        step: "step1",
+        anchor_source: anchorSource,
+        message_count: conversation.length,
+        anchors_count: anchors.length,
+        anchors,
+      };
+    }
+
+    const anchors = await this.detectAnchors(conversation, locale, anchorSource, PROMPT_STEP1);
+
+    if (options.step === "step2") {
+      const tested = await Promise.all(
+        anchors.slice(0, 40).map(async (anchor) => {
+          const anchorMessage = conversation.find((item) => item.msg_id === anchor.msg_id);
+          if (!anchorMessage) {
+            return null;
+          }
+          const previousMessages = collectPreviousMessages(conversation, anchorMessage.index, 20);
+          const followingMessages = collectFollowingMessages(conversation, anchorMessage.index, 15);
+          const anchorLine = formatTranscriptLine(anchorMessage);
+          const step2 =
+            followingMessages.length > 0
+              ? await this.classifyStep2(
+                  anchorLine,
+                  anchor,
+                  previousMessages,
+                  followingMessages,
+                  locale,
+                  options.prompt,
+                )
+              : this.emptyStep2(locale);
+          return {
+            anchor,
+            step2,
+            gaslighting: step2.fact_denial && (step2.perception_attack || step2.reality_avoidance),
+            previous_message_count: previousMessages.length,
+            following_message_count: followingMessages.length,
+          };
+        }),
+      );
+      return {
+        step: "step2",
+        anchor_source: anchorSource,
+        message_count: conversation.length,
+        anchors_count: anchors.length,
+        tested_count: tested.filter(Boolean).length,
+        episodes: tested.filter((item) => Boolean(item)),
+      };
+    }
+
+    const verification = await this.classifyStep3Batch(conversation, anchors.slice(0, 80), locale, options.prompt);
+    return {
+      step: "step3",
+      anchor_source: anchorSource,
+      message_count: conversation.length,
+      anchors_count: anchors.length,
+      verifications_count: verification.length,
+      verifications: verification,
+    };
+  }
+
   private async detectAnchors(
     conversation: PipelineMessage[],
     locale: Locale,
     anchorSource: AnchorSourceMode,
+    step1Prompt: string,
   ): Promise<GaslightingAnchor[]> {
     const chunks = chunkMessages(conversation);
     const rawAnchors: GaslightingAnchor[] = [];
@@ -493,7 +585,7 @@ export class GaslightingPipeline {
         step1ResponseSchema,
         STEP1_JSON_SCHEMA,
         "gaslighting_step1_anchors",
-        PROMPT_STEP1,
+        step1Prompt,
         step1Input,
       );
 
@@ -543,13 +635,14 @@ export class GaslightingPipeline {
     previousMessages: PipelineMessage[],
     followingMessages: PipelineMessage[],
     locale: Locale,
+    step2Prompt: string,
   ): Promise<GaslightingStep2> {
     const step2Input = buildStep2InputMarkdown(locale, anchorLine, anchor, previousMessages, followingMessages);
     const output = await this.callStructured(
       step2ResponseSchema,
       STEP2_JSON_SCHEMA,
       "gaslighting_step2_reaction",
-      PROMPT_STEP2,
+      step2Prompt,
       step2Input,
     );
 
@@ -568,6 +661,7 @@ export class GaslightingPipeline {
     conversation: PipelineMessage[],
     anchors: GaslightingAnchor[],
     locale: Locale,
+    step3Prompt: string,
   ): Promise<GaslightingVerification[]> {
     if (anchors.length === 0) {
       return [];
@@ -580,7 +674,7 @@ export class GaslightingPipeline {
         step3ResponseSchema,
         STEP3_JSON_SCHEMA,
         "gaslighting_step3_verification",
-        PROMPT_STEP3,
+        step3Prompt,
         step3Input,
         {
           modelOverride: STEP3_REASONING_MODEL,
@@ -600,7 +694,7 @@ export class GaslightingPipeline {
         step3ResponseSchema,
         STEP3_JSON_SCHEMA,
         "gaslighting_step3_verification_fallback",
-        PROMPT_STEP3,
+        step3Prompt,
         step3Input,
       );
     }

@@ -1,8 +1,0 @@
-schema: gaslighting_step2_reaction
-log_id: 9
-
-=== MODEL OUTPUT ===
-{
-  "content": "{\"reaction_type\":\"reality_avoidance_only\",\"normal_engagement\":false,\"non_engagement\":true,\"fact_denial\":false,\"perception_attack\":false,\"reality_avoidance\":true,\"notes\":\"Якорный факт: «Сам причем написал» (утверждение, что автор написал первым). В последующих репликах partner не подтверждает и не опровергает, не уточняет детали и не возвращается к проверке этого факта. Вместо этого переводит разговор на «модель взаимодействия», «как решаю конфликты», предлагает автору «найти другую модель», задаёт вопросы про цели — то есть уходит от обсуждения конкретного события/факта.\"}",
-  "finish_reason": "stop"
-}

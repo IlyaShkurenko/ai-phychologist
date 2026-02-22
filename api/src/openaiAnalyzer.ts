@@ -2,7 +2,15 @@ import OpenAI from "openai";
 import { z } from "zod";
 
 import { GaslightingPipeline } from "./gaslightingPipeline.js";
-import type { AnalysisConfig, AnalysisMode, AnalysisResponse, ChatMessage, GaslightingResult, Locale } from "./types.js";
+import type {
+  AnalysisConfig,
+  AnalysisMode,
+  AnalysisResponse,
+  ChatMessage,
+  PromptStep,
+  GaslightingResult,
+  Locale,
+} from "./types.js";
 
 const analysisResultSchema = z.object({
   summary: z.string(),
@@ -123,6 +131,66 @@ export class OpenAiAnalyzer {
       console.error("Gaslighting pipeline failed:", error);
       return this.fallbackGaslightingAnalysis(args, "openai_error");
     }
+  }
+
+  async runPromptLabDirectTest(args: {
+    step: PromptStep;
+    prompt: string;
+    messages: ChatMessage[];
+    locale: Locale;
+  }): Promise<{
+    mode: "direct_prompt";
+    step: PromptStep;
+    message_count: number;
+    model: string;
+    applied_prompt: string;
+    answer: string;
+  }> {
+    if (!this.client) {
+      throw new Error("OpenAI API key is not configured");
+    }
+
+    const transcript = buildPromptLabTranscript(args.messages);
+    const completion = await this.client.chat.completions.create({
+      model: this.model,
+      temperature: 0.2,
+      messages: [
+        {
+          role: "system",
+          content:
+            "You analyze Telegram chat transcripts. " +
+            "Follow the instruction exactly. " +
+            "Use only the provided transcript as source data. " +
+            `Answer language must be: ${args.locale === "ru" ? "Russian" : "English"}.`,
+        },
+        {
+          role: "user",
+          content: [
+            "Instruction:",
+            args.prompt,
+            "",
+            "Transcript:",
+            "```text",
+            transcript,
+            "```",
+          ].join("\n"),
+        },
+      ],
+    });
+
+    const answer = completion.choices[0]?.message?.content?.trim();
+    if (!answer) {
+      throw new Error("OpenAI returned empty test response");
+    }
+
+    return {
+      mode: "direct_prompt",
+      step: args.step,
+      message_count: args.messages.length,
+      model: this.model,
+      applied_prompt: args.prompt,
+      answer,
+    };
   }
 
   private mapGaslightingResult(args: AnalyzeArgs, result: GaslightingResult): AnalysisResponse {
@@ -705,4 +773,52 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+function buildPromptLabTranscript(messages: ChatMessage[]): string {
+  const sorted = [...messages].sort((a, b) => a.timestamp - b.timestamp);
+  const messageById = new Map<number, ChatMessage>(sorted.map((item) => [item.id, item] as const));
+  return sorted
+    .map((message) => {
+      const speaker = message.senderLabel === "Me" ? "self" : "partner";
+      const ts = formatPromptLabTimestamp(message.timestamp);
+      const text = collapseWhitespace(message.text);
+      let line = `msg_id=${message.id} | ${speaker}: ${text} (${ts})`;
+
+      if (typeof message.replyToMessageId === "number" && Number.isFinite(message.replyToMessageId)) {
+        const replyToMessage = messageById.get(message.replyToMessageId);
+        const replySpeaker = replyToMessage?.senderLabel === "Me" ? "self" : "partner";
+        const replyText = replyToMessage ? collapseWhitespace(replyToMessage.text) : "unavailable";
+        line += ` | reply_to=${message.replyToMessageId} (${replySpeaker ?? "unknown"}) -> ${truncateText(replyText, 180)}`;
+      }
+
+      return line;
+    })
+    .join("\n");
+}
+
+function formatPromptLabTimestamp(timestamp: number): string {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) {
+    return "unknown_ts";
+  }
+
+  const year = String(date.getFullYear());
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  const seconds = String(date.getSeconds()).padStart(2, "0");
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+}
+
+function collapseWhitespace(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function truncateText(value: string, limit: number): string {
+  if (value.length <= limit) {
+    return value;
+  }
+  return `${value.slice(0, limit - 1)}…`;
 }

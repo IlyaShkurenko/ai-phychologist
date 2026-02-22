@@ -1,8 +1,0 @@
-schema: gaslighting_step2_reaction
-log_id: 17
-
-=== MODEL OUTPUT ===
-{
-  "content": "{\"reaction_type\":\"non_engagement\",\"normal_engagement\":false,\"non_engagement\":true,\"fact_denial\":false,\"perception_attack\":false,\"reality_avoidance\":false,\"notes\":\"Якорь: вопрос/обвинение в обмане («Наебала меня да?)»). В следующих сообщениях partner не отвечает по существу (нет ни подтверждения/опровержения, ни уточняющих вопросов про сам факт обмана). Реплики partner («Что именно», «Нет Реально», далее шутливый/побочный диалог) относятся к другим фразам и уводят разговор в сторону, не проверяя якорный факт.\"}",
-  "finish_reason": "stop"
-}
